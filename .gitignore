@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets
+.env
+.env.*
+token.txt
+configs/local*.yaml
+
+# Local data and generated artifacts
+data/
+artifacts/
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+*.pkl
+*.parquet
+*.csv
+
+# Logs and temporary files
+logs/
+tmp/
+temp/
+*.log
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Planning/design docs are local working notes unless explicitly requested
+docs/design/
+docs/progress/
+docs/superpowers/plans/

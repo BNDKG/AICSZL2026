@@ -1,0 +1,8 @@
+project:
+  start_date: 20200101
+paths:
+  raw_db: data/raw.duckdb
+  feature_db: data/features.duckdb
+  artifacts_dir: artifacts
+tushare:
+  token_file: token.txt
