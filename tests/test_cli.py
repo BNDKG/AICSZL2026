@@ -50,9 +50,20 @@ def test_raw_update_uses_config_and_prints_summary(monkeypatch, capsys, tmp_path
         status = "success"
 
     class FakeUpdater:
-        def __init__(self, store, client, tables, batch_days, on_progress=None):
+        def __init__(
+            self,
+            store,
+            client,
+            tables,
+            batch_days,
+            max_retries,
+            retry_sleep_seconds,
+            on_progress=None,
+        ):
             calls["tables"] = tables
             calls["batch_days"] = batch_days
+            calls["max_retries"] = max_retries
+            calls["retry_sleep_seconds"] = retry_sleep_seconds
             self.on_progress = on_progress
 
         def update_to(self, target_date):
@@ -96,6 +107,10 @@ def test_raw_update_uses_config_and_prints_summary(monkeypatch, capsys, tmp_path
             "daily",
             "--batch-days",
             "30",
+            "--retries",
+            "5",
+            "--retry-sleep-ms",
+            "250",
         ]
     )
 
@@ -105,6 +120,8 @@ def test_raw_update_uses_config_and_prints_summary(monkeypatch, capsys, tmp_path
     assert calls["token_file"] == tmp_path / "token.txt"
     assert calls["tables"] == ["daily"]
     assert calls["batch_days"] == 30
+    assert calls["max_retries"] == 5
+    assert calls["retry_sleep_seconds"] == 0.25
     assert calls["target_date"] == 20260708
     assert "[raw] fetch daily 20260708 rows=42 fetch_ms=123" in captured.out
     assert "[raw] commit daily 20260708-20260708 dates=1 rows=42 commit_ms=45" in captured.out
@@ -135,7 +152,16 @@ def test_raw_update_prints_friendly_error(monkeypatch, capsys, tmp_path):
             return cls()
 
     class FakeUpdater:
-        def __init__(self, store, client, tables, batch_days, on_progress=None):
+        def __init__(
+            self,
+            store,
+            client,
+            tables,
+            batch_days,
+            max_retries,
+            retry_sleep_seconds,
+            on_progress=None,
+        ):
             pass
 
         def update_to(self, target_date):

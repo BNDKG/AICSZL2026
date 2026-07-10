@@ -40,6 +40,36 @@ class FakeTushareClient:
         )
 
 
+class FlakyTushareClient(FakeTushareClient):
+    def __init__(self, fail_first_on: int):
+        super().__init__()
+        self.fail_first_on = fail_first_on
+        self.failures: set[int] = set()
+
+    def fetch_table(self, table_name: str, trade_date: int) -> pd.DataFrame:
+        self.fetch_calls.append(trade_date)
+        if trade_date == self.fail_first_on and trade_date not in self.failures:
+            self.failures.add(trade_date)
+            raise RuntimeError(f"temporary boom on {trade_date}")
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": trade_date,
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.5,
+                    "close": 10.5,
+                    "pre_close": 10.0,
+                    "change": 0.5,
+                    "pct_chg": 5.0,
+                    "vol": 1000.0,
+                    "amount": 10000.0,
+                }
+            ]
+        )
+
+
 class MultiTableFakeClient:
     def __init__(self):
         self.calls: list[tuple[str, int, int | None]] = []
@@ -83,7 +113,7 @@ class MultiTableFakeClient:
 def test_raw_updater_commits_each_trade_date_and_advances_watermark(tmp_path: Path):
     store = RawStore(tmp_path / "raw.duckdb", start_date=20200101)
     client = FakeTushareClient()
-    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=1)
+    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=1, max_retries=0)
 
     summary = updater.update_to(20200106)
 
@@ -97,7 +127,7 @@ def test_raw_updater_commits_each_trade_date_and_advances_watermark(tmp_path: Pa
 def test_raw_updater_keeps_successful_progress_when_later_date_fails(tmp_path: Path):
     store = RawStore(tmp_path / "raw.duckdb", start_date=20200101)
     client = FakeTushareClient(fail_on=20200103)
-    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=1)
+    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=1, max_retries=0)
 
     with pytest.raises(RuntimeError, match="boom"):
         updater.update_to(20200106)
@@ -109,6 +139,35 @@ def test_raw_updater_keeps_successful_progress_when_later_date_fails(tmp_path: P
     assert state.status == "failed"
     rows = store.fetch_df("SELECT trade_date FROM daily ORDER BY trade_date")
     assert rows["trade_date"].tolist() == [20200102]
+
+
+def test_raw_updater_retries_transient_fetch_failure(tmp_path: Path):
+    store = RawStore(tmp_path / "raw.duckdb", start_date=20200101)
+    events = []
+    client = FlakyTushareClient(fail_first_on=20200103)
+    updater = RawUpdater(
+        store=store,
+        client=client,
+        tables=["daily"],
+        batch_days=1,
+        max_retries=2,
+        retry_sleep_seconds=0,
+        on_progress=events.append,
+    )
+
+    summary = updater.update_to(20200103)
+
+    assert client.fetch_calls == [20200102, 20200103, 20200103]
+    assert summary["daily"].last_success_trade_date == 20200103
+    rows = store.fetch_df("SELECT trade_date FROM daily ORDER BY trade_date")
+    assert rows["trade_date"].tolist() == [20200102, 20200103]
+    assert any(
+        event["event"] == "retry"
+        and event["table"] == "daily"
+        and event["trade_date"] == 20200103
+        and event["attempt"] == 1
+        for event in events
+    )
 
 
 def test_raw_updater_updates_trade_calendar_as_range(tmp_path: Path):
@@ -150,6 +209,7 @@ def test_raw_updater_emits_progress_events_for_success_and_failure(tmp_path: Pat
         client=client,
         tables=["daily"],
         batch_days=1,
+        max_retries=0,
         on_progress=events.append,
     )
 
@@ -176,7 +236,7 @@ def test_raw_updater_emits_progress_events_for_success_and_failure(tmp_path: Pat
 def test_raw_updater_commits_by_batch_not_each_trade_date(tmp_path: Path):
     store = RawStore(tmp_path / "raw.duckdb", start_date=20200101)
     client = FakeTushareClient(fail_on=20200106)
-    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=2)
+    updater = RawUpdater(store=store, client=client, tables=["daily"], batch_days=2, max_retries=0)
 
     with pytest.raises(RuntimeError):
         updater.update_to(20200106)

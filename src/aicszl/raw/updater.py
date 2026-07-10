@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Protocol
 
 import pandas as pd
@@ -24,12 +24,16 @@ class RawUpdater:
         client: RawDataClient,
         tables: list[str],
         batch_days: int = 20,
+        max_retries: int = 3,
+        retry_sleep_seconds: float = 1.0,
         on_progress: Callable[[dict[str, object]], None] | None = None,
     ):
         self.store = store
         self.client = client
         self.tables = list(tables)
         self.batch_days = max(1, int(batch_days))
+        self.max_retries = max(0, int(max_retries))
+        self.retry_sleep_seconds = max(0.0, float(retry_sleep_seconds))
         self.on_progress = on_progress
 
     def update_to(self, target_date: int) -> dict[str, RawUpdateState]:
@@ -45,7 +49,7 @@ class RawUpdater:
                 self.store.mark_attempt(table_name, trade_date)
                 try:
                     fetch_started = perf_counter()
-                    df = self.client.fetch_table(table_name, trade_date)
+                    df = self._fetch_with_retries(table_name, trade_date)
                     fetch_ms = int((perf_counter() - fetch_started) * 1000)
                     self._emit(
                         {
@@ -105,7 +109,7 @@ class RawUpdater:
         self.store.mark_attempt(table_name, target_date)
         try:
             fetch_started = perf_counter()
-            df = self.client.fetch_table(table_name, start_date, target_date)
+            df = self._fetch_with_retries(table_name, start_date, target_date)
             fetch_ms = int((perf_counter() - fetch_started) * 1000)
             self._emit(
                 {
@@ -145,6 +149,36 @@ class RawUpdater:
                 f"raw update failed table={table_name} trade_date={target_date}: {exc}"
             ) from exc
         return self.store.get_state(table_name)
+
+    def _fetch_with_retries(
+        self,
+        table_name: str,
+        trade_date: int,
+        end_date: int | None = None,
+    ) -> pd.DataFrame:
+        attempt = 0
+        while True:
+            try:
+                if end_date is None:
+                    return self.client.fetch_table(table_name, trade_date)
+                return self.client.fetch_table(table_name, trade_date, end_date)
+            except Exception as exc:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise
+                self._emit(
+                    {
+                        "event": "retry",
+                        "table": table_name,
+                        "trade_date": trade_date,
+                        "attempt": attempt,
+                        "max_retries": self.max_retries,
+                        "error": str(exc),
+                        "sleep_seconds": self.retry_sleep_seconds,
+                    }
+                )
+                if self.retry_sleep_seconds > 0:
+                    sleep(self.retry_sleep_seconds)
 
     def _emit(self, event: dict[str, object]) -> None:
         if self.on_progress is not None:

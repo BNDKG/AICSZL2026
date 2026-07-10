@@ -35,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     raw_update.add_argument("--config", default="configs/settings.yaml")
     raw_update.add_argument("--tables", default="daily")
     raw_update.add_argument("--batch-days", type=int, default=20)
+    raw_update.add_argument("--retries", type=int, default=3)
+    raw_update.add_argument("--retry-sleep-ms", type=int, default=1000)
     raw_update.add_argument("--dry-run", action="store_true")
     raw_update.set_defaults(handler=_handle_raw_update)
 
@@ -60,6 +62,8 @@ def _handle_raw_update(args: argparse.Namespace) -> int:
             client=client,
             tables=tables,
             batch_days=args.batch_days,
+            max_retries=args.retries,
+            retry_sleep_seconds=args.retry_sleep_ms / 1000,
             on_progress=_print_raw_progress,
         )
         try:
@@ -104,6 +108,13 @@ def _print_raw_progress(event: dict[str, object]) -> None:
         )
     elif name == "failed":
         print(f"[raw] failed {table} {trade_date} error={event.get('error')}", flush=True)
+    elif name == "retry":
+        print(
+            f"[raw] retry {table} {trade_date} attempt={event.get('attempt')}/"
+            f"{event.get('max_retries')} sleep_seconds={event.get('sleep_seconds')} "
+            f"error={event.get('error')}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
