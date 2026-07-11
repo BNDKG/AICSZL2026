@@ -9,6 +9,9 @@ from .base import BacktestRunArtifact, BacktestRunSettings
 from .dataset import BacktestDatasetArtifact
 
 
+LIMIT_PRICE_ATOL = 1e-6
+
+
 def export_qlib_provider(
     scores: pd.DataFrame,
     adj_factors: pd.DataFrame,
@@ -32,12 +35,17 @@ def export_qlib_provider(
         frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["trade_date"].astype(str), format="%Y%m%d")
         frame = frame.set_index("date").reindex(calendar)
-        frame.loc[~frame["is_tradable"].fillna(False), "close"] = np.nan
+        is_tradable = frame["is_tradable"].astype("boolean").fillna(False)
+        frame.loc[~is_tradable, "close"] = np.nan
         directory = root / "features" / str(code).lower()
         directory.mkdir(parents=True, exist_ok=True)
         start = float(calendar.index(frame.index.min()))
-        frame["limit_buy"] = np.isclose(frame["open"], frame["limit_up"], rtol=0.0, atol=1e-6).astype(float)
-        frame["limit_sell"] = np.isclose(frame["open"], frame["limit_down"], rtol=0.0, atol=1e-6).astype(float)
+        frame["limit_buy"] = np.isclose(
+            frame["open"], frame["limit_up"], rtol=0.0, atol=LIMIT_PRICE_ATOL
+        ).astype(float)
+        frame["limit_sell"] = np.isclose(
+            frame["open"], frame["limit_down"], rtol=0.0, atol=LIMIT_PRICE_ATOL
+        ).astype(float)
         fields = {"open": "open", "high": "high", "low": "low", "close": "close", "volume": "vol", "amount": "amount", "factor": "adj_factor", "limit_buy": "limit_buy", "limit_sell": "limit_sell"}
         for name, source in fields.items():
             np.hstack(([start], frame[source].to_numpy(dtype="float32"))).astype("<f4").tofile(directory / f"{name}.day.bin")
@@ -71,10 +79,33 @@ class QlibBacktestAdapter:
 
     def run(self, dataset: BacktestDatasetArtifact, settings: BacktestRunSettings) -> BacktestRunArtifact:
         scores = pd.read_pickle(dataset.dataset_path)
-        factors = self.raw_store.fetch_df("SELECT ts_code, trade_date, adj_factor FROM adj_factor")
         output_dir = dataset.dataset_path.parent / dataset.dataset_id
-        provider = export_qlib_provider(scores, factors, output_dir / "provider")
-        metrics, _ = run_qlib_topk_backtest(provider, scores, topk=settings.topk, n_drop=settings.n_drop, initial_cash=settings.initial_cash)
+        try:
+            factors = self.raw_store.fetch_df(
+                "SELECT ts_code, trade_date, adj_factor FROM adj_factor"
+            )
+            provider = export_qlib_provider(scores, factors, output_dir / "provider")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Qlib provider export failed for dataset {dataset.dataset_id}: {exc}"
+            ) from exc
+        try:
+            metrics, _ = run_qlib_topk_backtest(
+                provider,
+                scores,
+                topk=settings.topk,
+                n_drop=settings.n_drop,
+                initial_cash=settings.initial_cash,
+            )
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise RuntimeError(
+                "Qlib backtest requires pyqlib==0.9.7; install project dependencies "
+                "with `python -m pip install -e .`"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"Qlib backtest failed for dataset {dataset.dataset_id}: {exc}"
+            ) from exc
         report, positions = metrics["1day"]
         report_path = output_dir / "report.pkl"
         positions_path = output_dir / "positions.pkl"

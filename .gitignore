@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -37,6 +38,7 @@ temp/
 *.log
 
 # IDE and OS
+.codex/
 .idea/
 .vscode/
 .DS_Store
@@ -46,3 +48,7 @@ Thumbs.db
 docs/design/
 docs/progress/
 docs/superpowers/plans/
+docs/superpowers/specs/
+
+# Local dependency wheelhouse
+wheels/

@@ -1,5 +1,6 @@
 from .base import BacktestAdapter, BacktestRunArtifact, BacktestRunSettings
 from .dataset import BacktestDatasetArtifact, SCORE_DATASET_COLUMNS, build_score_dataset
+from .plotting import save_equity_curve
 from .qlib_adapter import QlibBacktestAdapter, export_qlib_provider, run_qlib_topk_backtest
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "build_score_dataset",
     "export_qlib_provider",
     "run_qlib_topk_backtest",
+    "save_equity_curve",
 ]

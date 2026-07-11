@@ -1,3 +1,6 @@
+from pathlib import Path
+import tomllib
+
 from aicszl.cli import main
 
 
@@ -10,6 +13,12 @@ def test_cli_help_exits_successfully(capsys):
     assert "raw" in captured.out
     assert "feature" in captured.out
     assert "train" in captured.out
+
+
+def test_project_declares_aicszl_console_entry_point():
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert project["project"]["scripts"]["aicszl"] == "aicszl.cli:main"
 
 
 def test_raw_update_dry_run_reports_target_date(capsys):
