@@ -1,0 +1,31 @@
+name: pv_5_vs_10_executable_5d_202607
+
+data:
+  feature_cutoff: 20260710
+
+train:
+  start: 20200101
+  end: 20240101
+  target: target.ret_open_t1_open_t6_rank_pct.v1
+
+predict:
+  start: 20240101
+  end: 20260701
+
+models:
+  - label: 5_features
+    feature_group: base_v1
+  - label: 10_features
+    feature_group: base_plus_price_volume_v1
+
+model_params:
+  n_estimators: 50
+  learning_rate: 0.1
+  min_data_in_leaf: 1
+  verbose: -1
+
+backtest:
+  topk: 50
+  n_drop: 10
+  initial_cash: 1000000
+  random_seed: 42

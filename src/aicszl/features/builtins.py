@@ -7,6 +7,7 @@ import pandas as pd
 from aicszl.raw.store import RawStore
 
 from .registry import FeatureRegistry
+from .price_volume import register_price_volume_features
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class FeatureCalcContext:
 
 def register_builtin_features(registry: FeatureRegistry) -> None:
     registry.feature_plugin(
+        plugin_id="market.raw_fields.v1",
         outputs=["market.close.v1", "market.amount.v1"],
         inputs=["raw.daily"],
         lookback_days=0,
@@ -23,6 +25,7 @@ def register_builtin_features(registry: FeatureRegistry) -> None:
         description="Daily close and amount raw fields",
     )(_calc_market_raw_fields)
     registry.feature_plugin(
+        plugin_id="market.ret_5d_rank.v1",
         outputs=["market.ret_5d_rank.v1"],
         inputs=["raw.daily", "raw.adj_factor"],
         lookback_days=5,
@@ -30,6 +33,7 @@ def register_builtin_features(registry: FeatureRegistry) -> None:
         description="Past 5-trading-day adjusted return cross-sectional percentile rank",
     )(_calc_market_ret_5d_rank)
     registry.feature_plugin(
+        plugin_id="limit.high_stop.v1",
         outputs=["limit.high_stop.v1"],
         inputs=["raw.daily", "raw.stk_limit"],
         lookback_days=0,
@@ -37,12 +41,14 @@ def register_builtin_features(registry: FeatureRegistry) -> None:
         description="Whether close price reaches the up-limit price",
     )(_calc_limit_high_stop)
     registry.feature_plugin(
+        plugin_id="moneyflow.net_mf_amount_rank.v1",
         outputs=["moneyflow.net_mf_amount_rank.v1"],
         inputs=["raw.moneyflow"],
         lookback_days=0,
         kind="derived",
         description="Net moneyflow amount cross-sectional percentile rank",
     )(_calc_moneyflow_net_mf_amount_rank)
+    register_price_volume_features(registry)
 
 
 def _calc_market_raw_fields(ctx: FeatureCalcContext, dates: list[int]) -> pd.DataFrame:

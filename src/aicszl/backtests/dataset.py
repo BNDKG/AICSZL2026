@@ -41,14 +41,28 @@ def build_score_dataset(
     source_path = Path(blend_path)
     blend = pd.read_pickle(source_path)
     _require_columns(blend, _BLEND_COLUMNS)
+    if blend.empty:
+        raise ValueError("Blend must not be empty")
+    start_date = int(blend["trade_date"].min())
+    end_date = int(blend["trade_date"].max())
     market = store.fetch_df(
-        "SELECT ts_code, trade_date, open, high, low, close, vol, amount FROM daily"
+        """
+        SELECT ts_code, trade_date, open, high, low, close, vol, amount
+        FROM daily
+        WHERE trade_date BETWEEN ? AND ?
+        """,
+        [start_date, end_date],
     )
     result = blend.merge(market, on=["ts_code", "trade_date"], how="inner")
     if result.empty:
         raise ValueError("Blend has no matching daily market data")
     limits = store.fetch_df(
-        "SELECT ts_code, trade_date, up_limit, down_limit FROM stk_limit"
+        """
+        SELECT ts_code, trade_date, up_limit, down_limit
+        FROM stk_limit
+        WHERE trade_date BETWEEN ? AND ?
+        """,
+        [start_date, end_date],
     )
     result = result.merge(limits, on=["ts_code", "trade_date"], how="left")
     result["score"] = result["score_raw_blend"]

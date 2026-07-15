@@ -17,6 +17,14 @@ def test_task3_to_6_smoke_script_has_help():
     assert "--predict-end" in result.stdout
 
 
+def test_task3_to_6_smoke_uses_formal_feature_updater():
+    source = open("scripts/smoke_task3_to_6.py", encoding="utf-8").read()
+
+    assert "FeatureUpdater" in source
+    assert "feature_updater.update_to(max(dates))" in source
+    assert "upsert_feature_values" not in source
+
+
 def test_model_random_backtest_script_documents_automatic_equity_curve():
     result = subprocess.run(
         [sys.executable, "scripts/run_model_random_backtest.py", "--help"],

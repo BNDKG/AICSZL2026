@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,12 +35,26 @@ class FeatureUpdateState:
 
 
 class FeatureStore:
-    def __init__(self, db_path: str | Path, start_date: int):
+    def __init__(self, db_path: str | Path, start_date: int, read_only: bool = False):
         self.db_path = Path(db_path)
         self.start_date = int(start_date)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(self.db_path))
-        self._init_tables()
+        self.read_only = bool(read_only)
+        if not self.read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = duckdb.connect(str(self.db_path), read_only=self.read_only)
+        if not self.read_only:
+            self._init_tables()
+
+    @contextmanager
+    def transaction(self):
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            yield
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        else:
+            self.conn.execute("COMMIT")
 
     def upsert_feature_values(self, df: pd.DataFrame) -> int:
         columns = ["ts_code", "trade_date", "feature_name", "value"]
@@ -140,6 +155,37 @@ class FeatureStore:
             """,
             params,
         )
+
+    def get_feature_statuses(self, feature_names: list[str]) -> dict[str, str]:
+        if not feature_names:
+            return {}
+        placeholders = ", ".join("?" for _ in feature_names)
+        rows = self.conn.execute(
+            f"""
+            SELECT feature_name, status
+            FROM feature_meta
+            WHERE feature_name IN ({placeholders})
+            """,
+            list(feature_names),
+        ).fetchall()
+        return {str(feature_name): str(status) for feature_name, status in rows}
+
+    def feature_date_coverage(self, feature_names: list[str]) -> dict[str, set[int]]:
+        coverage = {feature_name: set() for feature_name in feature_names}
+        if not feature_names:
+            return coverage
+        placeholders = ", ".join("?" for _ in feature_names)
+        rows = self.conn.execute(
+            f"""
+            SELECT DISTINCT feature_name, trade_date
+            FROM feature_values
+            WHERE feature_name IN ({placeholders})
+            """,
+            list(feature_names),
+        ).fetchall()
+        for feature_name, trade_date in rows:
+            coverage[str(feature_name)].add(int(trade_date))
+        return coverage
 
     def get_state(self, feature_name: str) -> FeatureUpdateState:
         row = self.conn.execute(

@@ -21,12 +21,15 @@ class RawUpdateState:
 
 
 class RawStore:
-    def __init__(self, db_path: str | Path, start_date: int):
+    def __init__(self, db_path: str | Path, start_date: int, read_only: bool = False):
         self.db_path = Path(db_path)
         self.start_date = int(start_date)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(self.db_path))
-        self._init_state_table()
+        self.read_only = bool(read_only)
+        if not self.read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = duckdb.connect(str(self.db_path), read_only=self.read_only)
+        if not self.read_only:
+            self._init_state_table()
 
     def upsert(self, table_name: str, df: pd.DataFrame) -> int:
         spec = self._spec(table_name)

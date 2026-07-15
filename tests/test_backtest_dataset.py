@@ -74,6 +74,32 @@ def test_build_score_dataset_rejects_empty_market_join(tmp_path: Path):
         store.close()
 
 
+def test_build_score_dataset_limits_raw_queries_to_blend_date_range(tmp_path: Path):
+    store = RawStore(tmp_path / "raw.duckdb", start_date=20200101)
+    calls: list[tuple[str, list[object]]] = []
+
+    class RecordingStore:
+        def fetch_df(self, sql: str, params: list[object] | None = None):
+            calls.append((sql, list(params or [])))
+            return store.fetch_df(sql, params)
+
+    try:
+        _seed_daily(store)
+        _seed_limits(store)
+        blend_path = tmp_path / "blend.pkl"
+        pd.DataFrame([_blend("000001.SZ", 20200102, 0.9)]).to_pickle(blend_path)
+
+        build_score_dataset(
+            RecordingStore(), blend_path, tmp_path / "artifacts" / "backtests"
+        )
+
+        assert len(calls) == 2
+        assert all("trade_date BETWEEN ? AND ?" in sql for sql, _ in calls)
+        assert all(params == [20200102, 20200102] for _, params in calls)
+    finally:
+        store.close()
+
+
 def _seed_daily(store: RawStore) -> None:
     store.upsert(
         "daily",

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from aicszl.blends import BlendInput, BlendJob, blend_predictions
 from aicszl.config import load_settings
-from aicszl.features import FeatureRegistry, FeatureStore
+from aicszl.features import FeatureRegistry, FeatureStore, FeatureUpdater
 from aicszl.features.builtins import FeatureCalcContext, register_builtin_features
 from aicszl.models.training import TrainingJob, train_lightgbm_regressor
 from aicszl.predictions import PredictionRequest, predict_from_artifact
@@ -43,11 +43,18 @@ def main() -> int:
             for meta in plugin.to_meta():
                 feature_store.register_feature_meta(meta)
 
-        feature_ctx = FeatureCalcContext(raw_store)
-        for plugin in registry.plugins():
-            values = plugin.func(feature_ctx, dates)
-            rows = feature_store.upsert_feature_values(values)
-            print(f"feature outputs={','.join(plugin.outputs)} rows={rows}")
+        feature_updater = FeatureUpdater(
+            raw_store=raw_store,
+            feature_store=feature_store,
+            registry=registry,
+            calc_context=FeatureCalcContext(raw_store),
+        )
+        feature_summary = feature_updater.update_to(max(dates))
+        for plugin_id, state in feature_summary.items():
+            print(
+                f"feature plugin={plugin_id} status={state.status} "
+                f"through={state.last_success_trade_date} rows={state.row_count}"
+            )
 
         target_values = calc_ret_5d_rank_pct(TargetCalcContext(raw_store), dates)
         target_rows = feature_store.upsert_target_values(target_values)

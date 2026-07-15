@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -139,3 +140,75 @@ def test_feature_update_state_records_attempt_success_and_failure(tmp_path: Path
     assert failed.last_attempt_trade_date == 20200103
     assert failed.status == "failed"
     assert failed.error_message == "boom"
+
+
+def test_feature_store_transaction_rolls_back_values_and_state(tmp_path: Path):
+    store = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    values = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": 20200102,
+                "feature_name": "market.close.v1",
+                "value": 10.5,
+            }
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with store.transaction():
+            store.upsert_feature_values(values)
+            store.mark_success("market.close.v1", 20200102, 20200102, 1)
+            raise RuntimeError("boom")
+
+    assert store.fetch_df("SELECT count(*) AS n FROM feature_values").iloc[0]["n"] == 0
+    assert store.get_state("market.close.v1").status == "pending"
+
+
+def test_feature_store_reports_statuses_and_date_coverage(tmp_path: Path):
+    store = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    meta = FeatureMeta(
+        feature_name="market.close.v1",
+        domain="market",
+        version="v1",
+        kind="raw_field",
+        owner_plugin="market.raw_fields.v1",
+        input_tables=["raw.daily"],
+        lookback_days=0,
+        code_hash="abc123",
+    )
+    store.register_feature_meta(meta)
+    store.upsert_feature_values(
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": 20200102,
+                    "feature_name": "market.close.v1",
+                    "value": 10.5,
+                }
+            ]
+        )
+    )
+
+    assert store.get_feature_statuses(["market.close.v1", "market.new.v1"]) == {
+        "market.close.v1": "active"
+    }
+    assert store.feature_date_coverage(["market.close.v1", "market.new.v1"]) == {
+        "market.close.v1": {20200102},
+        "market.new.v1": set(),
+    }
+
+
+def test_feature_store_can_reopen_read_only_without_writes(tmp_path: Path):
+    path = tmp_path / "features.duckdb"
+    writer = FeatureStore(path, start_date=20200101)
+    writer.close()
+
+    reader = FeatureStore(path, start_date=20200101, read_only=True)
+    try:
+        assert reader.fetch_df("SELECT count(*) AS n FROM feature_values").iloc[0]["n"] == 0
+        with pytest.raises(duckdb.Error):
+            reader.mark_success("market.close.v1", 20200102, 20200102, 1)
+    finally:
+        reader.close()

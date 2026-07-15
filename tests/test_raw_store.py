@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import duckdb
 import pandas as pd
+import pytest
 
 from aicszl.raw.store import RawStore
 
@@ -111,3 +113,17 @@ def test_raw_store_upserts_all_v0_tables(tmp_path: Path):
         assert store.upsert(table_name, df) == 1
         rows = store.fetch_df(f'SELECT count(*) AS n FROM "{table_name}"')
         assert int(rows.loc[0, "n"]) == 1
+
+
+def test_raw_store_can_reopen_read_only_without_writes(tmp_path: Path):
+    path = tmp_path / "raw.duckdb"
+    writer = RawStore(path, start_date=20200101)
+    writer.close()
+
+    reader = RawStore(path, start_date=20200101, read_only=True)
+    try:
+        assert reader.get_state("daily").status == "pending"
+        with pytest.raises(duckdb.Error):
+            reader.mark_success("daily", 20200102, row_count=1)
+    finally:
+        reader.close()

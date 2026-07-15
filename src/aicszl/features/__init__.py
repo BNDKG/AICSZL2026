@@ -1,5 +1,6 @@
 from .registry import FeaturePlugin, FeatureRegistry
 from .store import FeatureMeta, FeatureStore, FeatureUpdateState
+from .updater import FeaturePluginUpdatePlan, FeaturePluginUpdateSummary, FeatureUpdater
 
 __all__ = [
     "FeatureMeta",
@@ -7,4 +8,7 @@ __all__ = [
     "FeatureRegistry",
     "FeatureStore",
     "FeatureUpdateState",
+    "FeaturePluginUpdatePlan",
+    "FeaturePluginUpdateSummary",
+    "FeatureUpdater",
 ]
