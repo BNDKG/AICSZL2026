@@ -25,7 +25,7 @@ def _predictions() -> dict[str, pd.DataFrame]:
             "score_raw": [10.0, 30.0, 20.0, 30.0, 10.0, 20.0],
         }
     )
-    return {"5_features": five, "10_features": ten}
+    return {"model_a": five, "model_b": ten}
 
 
 def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
@@ -34,7 +34,7 @@ def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
 
     scores = build_common_scores(predictions, random_seed=42, topk=2)
 
-    assert list(scores) == ["random_baseline", "5_features", "10_features"]
+    assert list(scores) == ["random_baseline", "model_a", "model_b"]
     expected_keys = [
         (20240102, "B"),
         (20240102, "C"),
@@ -46,8 +46,8 @@ def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
             frame[["trade_date", "ts_code"]].itertuples(index=False, name=None)
         ) == expected_keys
         assert list(frame.columns) == ["trade_date", "ts_code", "score"]
-    assert scores["5_features"]["score"].tolist() == pytest.approx([0.5, 1.0, 1.0, 0.5])
-    assert scores["10_features"]["score"].tolist() == pytest.approx([0.5, 1.0, 1.0, 0.5])
+    assert scores["model_a"]["score"].tolist() == pytest.approx([0.5, 1.0, 1.0, 0.5])
+    assert scores["model_b"]["score"].tolist() == pytest.approx([0.5, 1.0, 1.0, 0.5])
     assert scores["random_baseline"]["score"].tolist() == pytest.approx(
         np.random.default_rng(42).random(4)
     )
@@ -60,13 +60,13 @@ def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
     [
         (lambda frames: {}, "at least one model"),
         (
-            lambda frames: {"5_features": frames["5_features"].drop(columns="score_raw")},
+            lambda frames: {"model_a": frames["model_a"].drop(columns="score_raw")},
             "missing required columns",
         ),
         (
             lambda frames: {
-                "5_features": pd.concat(
-                    [frames["5_features"], frames["5_features"].iloc[[0]]],
+                    "model_a": pd.concat(
+                    [frames["model_a"], frames["model_a"].iloc[[0]]],
                     ignore_index=True,
                 )
             },
@@ -74,7 +74,7 @@ def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
         ),
         (
             lambda frames: {
-                "5_features": frames["5_features"].assign(
+                "model_a": frames["model_a"].assign(
                     score_raw=lambda frame: frame["score_raw"].mask(frame.index == 0, np.inf)
                 )
             },
@@ -82,8 +82,8 @@ def test_common_scores_use_identical_sorted_intersection_and_recomputed_ranks():
         ),
         (
             lambda frames: {
-                "5_features": frames["5_features"],
-                "10_features": frames["10_features"].assign(
+                "model_a": frames["model_a"],
+                "model_b": frames["model_b"].assign(
                     ts_code=lambda frame: "Z" + frame["ts_code"]
                 ),
             },

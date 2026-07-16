@@ -30,7 +30,7 @@ def test_script_builds_request_and_prints_dry_run_contract(monkeypatch, tmp_path
             manifest_path=None,
             effective_train_range=(20200102, 20231229),
             effective_predict_range=(20240102, 20260701),
-            required_plugins=("market.raw_fields.v1", "market.price_volume_pack.v1"),
+            required_plugins=("market.raw_fields.v1", "market.ret_5d_rank.v1"),
         )
 
     monkeypatch.setattr(module, "run_experiment", fake_run)
@@ -58,7 +58,7 @@ def test_script_builds_request_and_prints_dry_run_contract(monkeypatch, tmp_path
     assert "preflight complete" in stdout
     assert "train=20200102-20231229" in stdout
     assert "predict=20240102-20260701" in stdout
-    assert "market.price_volume_pack.v1" in stdout
+    assert "market.ret_5d_rank.v1" in stdout
 
 
 def test_script_prints_completed_absolute_artifacts(monkeypatch, tmp_path: Path, capsys):

@@ -80,25 +80,10 @@ def _assemble_prediction_frame(
     start_date: int,
     end_date: int,
 ) -> pd.DataFrame:
-    feature_values = _load_feature_values(store, features, start_date, end_date)
-    if feature_values.empty:
+    x = store.load_feature_frame(features, start_date, end_date)
+    if x.empty:
         return pd.DataFrame(columns=["ts_code", "trade_date", *features, target])
-    x = feature_values.pivot(
-        index=["ts_code", "trade_date"],
-        columns="feature_name",
-        values="value",
-    ).reset_index()
-    x.columns.name = None
-    x = x.dropna(subset=features)
-    y = store.fetch_df(
-        """
-        SELECT ts_code, trade_date, value
-        FROM target_values
-        WHERE trade_date BETWEEN ? AND ?
-          AND target_name = ?
-        """,
-        [int(start_date), int(end_date), target],
-    ).rename(columns={"value": target})
+    y = store.load_target_frame(target, start_date, end_date)
     if y.empty:
         x[target] = None
         return x[["ts_code", "trade_date", *features, target]]
@@ -107,19 +92,12 @@ def _assemble_prediction_frame(
     ]
 
 
-def _load_feature_values(
+def prediction_available_dates(
     store: FeatureStore,
     features: list[str],
     start_date: int,
     end_date: int,
-) -> pd.DataFrame:
-    placeholders = ", ".join("?" for _ in features)
-    return store.fetch_df(
-        f"""
-        SELECT ts_code, trade_date, feature_name, value
-        FROM feature_values
-        WHERE trade_date BETWEEN ? AND ?
-          AND feature_name IN ({placeholders})
-        """,
-        [int(start_date), int(end_date), *features],
-    )
+) -> list[int]:
+    if not features or int(start_date) > int(end_date):
+        return []
+    return store.feature_available_dates(features, start_date, end_date)

@@ -56,9 +56,14 @@ class FeatureUpdater:
         target_trade_date = all_dates[-1] if all_dates else None
         plans: list[FeaturePluginUpdatePlan] = []
         for plugin in self._plugins:
+            code_changed = self._plugin_code_changed(plugin)
             if target_trade_date is not None:
                 self._check_dependencies(plugin, target_trade_date)
-            watermark, _ = self._effective_watermark(plugin, all_dates)
+            watermark, _ = self._effective_watermark(
+                plugin,
+                all_dates,
+                force_from_start=code_changed,
+            )
             pending_dates = self._pending_dates(all_dates, watermark)
             plan = FeaturePluginUpdatePlan(
                 plugin_id=plugin.plugin_id,
@@ -86,14 +91,23 @@ class FeatureUpdater:
         target_trade_date = all_dates[-1] if all_dates else None
         summary: dict[str, FeaturePluginUpdateSummary] = {}
         for plugin in self._plugins:
+            code_changed = self._plugin_code_changed(plugin)
             if target_trade_date is not None:
                 self._check_dependencies(plugin, target_trade_date)
-            for meta in plugin.to_meta():
-                self.feature_store.register_feature_meta(meta)
+            if code_changed:
+                with self.feature_store.transaction():
+                    self.feature_store.reset_feature_plugin(plugin.plugin_id, plugin.outputs)
+                    for meta in plugin.to_meta():
+                        self.feature_store.register_feature_meta(meta)
+            else:
+                for meta in plugin.to_meta():
+                    self.feature_store.register_feature_meta(meta)
 
-            watermark, bootstrap = self._effective_watermark(plugin, all_dates)
-            if bootstrap is not None:
-                self._bootstrap_states(plugin, bootstrap)
+            watermark, _ = self._effective_watermark(
+                plugin,
+                all_dates,
+                force_from_start=code_changed,
+            )
             pending_dates = self._pending_dates(all_dates, watermark)
             if not pending_dates:
                 last_success = self._common_success_watermark(plugin)
@@ -189,31 +203,25 @@ class FeatureUpdater:
         self,
         plugin: FeaturePlugin,
         all_dates: list[int],
+        *,
+        force_from_start: bool = False,
     ) -> tuple[int | None, int | None]:
+        if force_from_start:
+            return None, None
         states = [self.feature_store.get_state(output) for output in plugin.outputs]
         watermarks = [state.last_success_trade_date for state in states]
         if all(watermark is None for watermark in watermarks):
-            common_prefix = self._legacy_common_prefix(plugin, all_dates)
-            return common_prefix, common_prefix
+            return None, None
         if any(watermark is None for watermark in watermarks):
             return None, None
         return min(int(watermark) for watermark in watermarks if watermark is not None), None
 
-    def _legacy_common_prefix(self, plugin: FeaturePlugin, all_dates: list[int]) -> int | None:
-        coverage = self.feature_store.feature_date_coverage(plugin.outputs)
-        eligible_dates = all_dates[plugin.lookback_days :]
-        common_end: int | None = None
-        for trade_date in eligible_dates:
-            if all(trade_date in coverage[output] for output in plugin.outputs):
-                common_end = trade_date
-            else:
-                break
-        return common_end
-
-    def _bootstrap_states(self, plugin: FeaturePlugin, trade_date: int) -> None:
-        with self.feature_store.transaction():
-            for output in plugin.outputs:
-                self.feature_store.mark_success(output, trade_date, trade_date, row_count=0)
+    def _plugin_code_changed(self, plugin: FeaturePlugin) -> bool:
+        stored = self.feature_store.get_feature_code_hashes(plugin.outputs)
+        return any(
+            output in stored and stored[output] != plugin.code_hash
+            for output in plugin.outputs
+        )
 
     def _pending_dates(self, all_dates: list[int], watermark: int | None) -> list[int]:
         if watermark is None:
@@ -233,11 +241,13 @@ class FeatureUpdater:
             values = plugin.func(self.calc_context, list(batch))
             self._validate_values(plugin, values, batch, all_dates)
             with self.feature_store.transaction():
-                rows = self.feature_store.upsert_feature_values(values)
+                rows = self.feature_store.append_plugin_values(
+                    plugin.plugin_id,
+                    plugin.outputs,
+                    values,
+                )
                 for output in plugin.outputs:
-                    output_rows = (
-                        int((values["feature_name"] == output).sum()) if not values.empty else 0
-                    )
+                    output_rows = int(values[output].notna().sum()) if not values.empty else 0
                     self.feature_store.mark_success(
                         output,
                         batch[-1],
@@ -280,22 +290,13 @@ class FeatureUpdater:
         batch: list[int],
         all_dates: list[int],
     ) -> None:
-        required_columns = {"ts_code", "trade_date", "feature_name", "value"}
-        missing_columns = required_columns.difference(values.columns)
-        if missing_columns:
-            raise ValueError(f"feature plugin result missing columns: {sorted(missing_columns)}")
-
-        actual_outputs = set(str(value) for value in values["feature_name"].unique())
-        declared_outputs = set(plugin.outputs)
-        unknown_outputs = actual_outputs.difference(declared_outputs)
-        if unknown_outputs:
-            raise ValueError(f"feature plugin returned undeclared outputs: {sorted(unknown_outputs)}")
-
-        warmup_dates = set(all_dates[: plugin.lookback_days])
-        batch_is_warmup = all(trade_date in warmup_dates for trade_date in batch)
-        missing_outputs = declared_outputs.difference(actual_outputs)
-        if missing_outputs and not batch_is_warmup:
-            raise ValueError(f"feature plugin result missing declared outputs: {sorted(missing_outputs)}")
+        expected_columns = ["ts_code", "trade_date", *plugin.outputs]
+        if list(values.columns) != expected_columns:
+            raise ValueError(
+                f"feature plugin result columns must be exactly {expected_columns}"
+            )
+        if values.duplicated(["ts_code", "trade_date"]).any():
+            raise ValueError("feature plugin returned duplicate (ts_code, trade_date) keys")
 
         returned_dates = set(int(value) for value in values["trade_date"].unique())
         unexpected_dates = returned_dates.difference(batch)

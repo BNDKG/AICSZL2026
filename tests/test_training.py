@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from aicszl.artifact_cache import build_training_contract
 from aicszl.features.store import FeatureMeta, FeatureStore
 from aicszl.models.training import TrainingJob, compute_artifact_identity, train_lightgbm_regressor
 
@@ -32,8 +33,7 @@ def test_compute_artifact_identity_is_stable_and_includes_config_inputs():
             model_params={"n_estimators": 3, "learning_rate": 0.1},
         ),
         feature_hashes,
-    )
-
+        )
     assert first == second
     assert first != changed
     assert len(first) == 8
@@ -52,6 +52,7 @@ def test_train_lightgbm_regressor_writes_model_and_metadata(tmp_path: Path):
         filters=["market.amount.v1 > 500"],
         model_params={"n_estimators": 3, "learning_rate": 0.1, "min_data_in_leaf": 1, "verbose": -1},
     )
+    expected_contract = build_training_contract(store, job)
 
     artifact = train_lightgbm_regressor(store, job, tmp_path / "artifacts" / "models")
 
@@ -59,6 +60,7 @@ def test_train_lightgbm_regressor_writes_model_and_metadata(tmp_path: Path):
     assert artifact.meta_path.exists()
     assert artifact.model_path.name == f"{job.name}__{artifact.artifact_hash}.pkl"
     assert artifact.meta_path.name == f"{job.name}__{artifact.artifact_hash}.meta.json"
+    assert artifact.artifact_hash == expected_contract.cache_key
 
     metadata = json.loads(artifact.meta_path.read_text(encoding="utf-8"))
     assert metadata["artifact_hash"] == artifact.artifact_hash
@@ -82,15 +84,21 @@ def _seed_training_values(store: FeatureStore) -> None:
         ("000002.SZ", 20200103, 21.0, 2100.0, 0.4),
     ]
     for ts_code, trade_date, close, amount, target in samples:
-        feature_rows.extend(
-            [
-                _feature(ts_code, trade_date, "market.close.v1", close),
-                _feature(ts_code, trade_date, "market.amount.v1", amount),
-            ]
+        feature_rows.append(
+            {
+                "ts_code": ts_code,
+                "trade_date": trade_date,
+                "market.close.v1": close,
+                "market.amount.v1": amount,
+            }
         )
-        target_rows.append(_target(ts_code, trade_date, "target.ret_5d_rank_pct.v1", target))
-    store.upsert_feature_values(pd.DataFrame(feature_rows))
-    store.upsert_target_values(pd.DataFrame(target_rows))
+        target_rows.append({"ts_code": ts_code, "trade_date": trade_date, "value": target})
+    store.append_plugin_values(
+        "market.raw_fields.v1",
+        ["market.close.v1", "market.amount.v1"],
+        pd.DataFrame(feature_rows),
+    )
+    store.append_target_values("target.ret_5d_rank_pct.v1", pd.DataFrame(target_rows))
 
 
 def _seed_feature_meta(store: FeatureStore) -> None:
@@ -100,7 +108,7 @@ def _seed_feature_meta(store: FeatureStore) -> None:
             domain="market",
             version="v1",
             kind="raw_field",
-            owner_plugin="market",
+            owner_plugin="market.raw_fields.v1",
             input_tables=["raw.daily"],
             lookback_days=0,
             code_hash="close-hash",
@@ -112,27 +120,9 @@ def _seed_feature_meta(store: FeatureStore) -> None:
             domain="market",
             version="v1",
             kind="raw_field",
-            owner_plugin="market",
+            owner_plugin="market.raw_fields.v1",
             input_tables=["raw.daily"],
             lookback_days=0,
             code_hash="amount-hash",
         )
     )
-
-
-def _feature(ts_code: str, trade_date: int, feature_name: str, value: float) -> dict[str, object]:
-    return {
-        "ts_code": ts_code,
-        "trade_date": trade_date,
-        "feature_name": feature_name,
-        "value": value,
-    }
-
-
-def _target(ts_code: str, trade_date: int, target_name: str, value: float) -> dict[str, object]:
-    return {
-        "ts_code": ts_code,
-        "trade_date": trade_date,
-        "target_name": target_name,
-        "value": value,
-    }

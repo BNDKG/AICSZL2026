@@ -52,18 +52,33 @@ def resolve_experiment_timing(
     if not resolved_train:
         raise ValueError("Training range is empty after target-overlap purge")
 
-    signal_to_execution = {
-        date: _future_date(
+    signal_to_execution: dict[int, int] = {}
+    for date in requested_predict:
+        try:
+            execution_date = _future_date(
+                open_dates,
+                index_by_date,
+                date,
+                definition.execution_delay,
+            )
+        except ValueError:
+            if date not in index_by_date:
+                raise
+            target_index = index_by_date[date] + definition.execution_delay
+            if target_index < len(open_dates):
+                raise
+            continue
+        signal_to_execution[date] = execution_date
+    if not signal_to_execution:
+        _future_date(
             open_dates,
             index_by_date,
-            date,
+            requested_predict[0],
             definition.execution_delay,
         )
-        for date in requested_predict
-    }
     return ResolvedExperimentTiming(
         train_dates=resolved_train,
-        predict_dates=requested_predict,
+        predict_dates=tuple(signal_to_execution),
         execution_dates=tuple(signal_to_execution.values()),
         last_train_target_exit=target_exits[resolved_train[-1]],
         signal_to_execution=signal_to_execution,

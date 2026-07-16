@@ -7,7 +7,6 @@ import pandas as pd
 from aicszl.raw.store import RawStore
 
 from .registry import FeatureRegistry
-from .price_volume import register_price_volume_features
 
 
 @dataclass(frozen=True)
@@ -48,19 +47,18 @@ def register_builtin_features(registry: FeatureRegistry) -> None:
         kind="derived",
         description="Net moneyflow amount cross-sectional percentile rank",
     )(_calc_moneyflow_net_mf_amount_rank)
-    register_price_volume_features(registry)
 
 
 def _calc_market_raw_fields(ctx: FeatureCalcContext, dates: list[int]) -> pd.DataFrame:
     daily = _fetch_daily(ctx, dates, columns=["ts_code", "trade_date", "close", "amount"])
-    close = _feature_frame(daily, "market.close.v1", "close")
-    amount = _feature_frame(daily, "market.amount.v1", "amount")
-    return pd.concat([close, amount], ignore_index=True)
+    return daily.rename(
+        columns={"close": "market.close.v1", "amount": "market.amount.v1"}
+    )[["ts_code", "trade_date", "market.close.v1", "market.amount.v1"]]
 
 
 def _calc_market_ret_5d_rank(ctx: FeatureCalcContext, dates: list[int]) -> pd.DataFrame:
     if not dates:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["market.ret_5d_rank.v1"])
     target_dates = sorted(int(date) for date in dates)
     max_date = max(target_dates)
     prices = ctx.raw_store.fetch_df(
@@ -75,7 +73,7 @@ def _calc_market_ret_5d_rank(ctx: FeatureCalcContext, dates: list[int]) -> pd.Da
         [max_date],
     )
     if prices.empty:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["market.ret_5d_rank.v1"])
 
     frames: list[pd.DataFrame] = []
     for ts_code, group in prices.groupby("ts_code"):
@@ -84,27 +82,25 @@ def _calc_market_ret_5d_rank(ctx: FeatureCalcContext, dates: list[int]) -> pd.Da
         ordered["ret_5d"] = ordered["adj_close"] / ordered["past_adj_close"] - 1.0
         frames.append(ordered[["ts_code", "trade_date", "ret_5d"]])
     if not frames:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["market.ret_5d_rank.v1"])
 
     returns = pd.concat(frames, ignore_index=True)
     returns = returns[returns["trade_date"].isin(target_dates)].dropna(subset=["ret_5d"])
     if returns.empty:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["market.ret_5d_rank.v1"])
 
-    returns["value"] = returns.groupby("trade_date")["ret_5d"].rank(method="average", pct=True)
-    returns["feature_name"] = "market.ret_5d_rank.v1"
-    return returns[["ts_code", "trade_date", "feature_name", "value"]].reset_index(drop=True)
+    returns["market.ret_5d_rank.v1"] = returns.groupby("trade_date")["ret_5d"].rank(method="average", pct=True)
+    return returns[["ts_code", "trade_date", "market.ret_5d_rank.v1"]].reset_index(drop=True)
 
 
 def _calc_limit_high_stop(ctx: FeatureCalcContext, dates: list[int]) -> pd.DataFrame:
     if not dates:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["limit.high_stop.v1"])
     joined = _fetch_limit_join(ctx, dates)
     if joined.empty:
-        return _empty_feature_frame()
+        return _empty_feature_frame(["limit.high_stop.v1"])
     result = joined[["ts_code", "trade_date"]].copy()
-    result["feature_name"] = "limit.high_stop.v1"
-    result["value"] = (joined["close"] >= joined["up_limit"]).astype(float)
+    result["limit.high_stop.v1"] = (joined["close"] >= joined["up_limit"]).astype(float)
     return result
 
 
@@ -116,10 +112,9 @@ def _calc_moneyflow_net_mf_amount_rank(ctx: FeatureCalcContext, dates: list[int]
         dates=dates,
     )
     if moneyflow.empty:
-        return _empty_feature_frame()
-    moneyflow["value"] = moneyflow.groupby("trade_date")["net_mf_amount"].rank(method="average", pct=True)
-    moneyflow["feature_name"] = "moneyflow.net_mf_amount_rank.v1"
-    return moneyflow[["ts_code", "trade_date", "feature_name", "value"]].reset_index(drop=True)
+        return _empty_feature_frame(["moneyflow.net_mf_amount_rank.v1"])
+    moneyflow["moneyflow.net_mf_amount_rank.v1"] = moneyflow.groupby("trade_date")["net_mf_amount"].rank(method="average", pct=True)
+    return moneyflow[["ts_code", "trade_date", "moneyflow.net_mf_amount_rank.v1"]].reset_index(drop=True)
 
 
 def _fetch_daily(ctx: FeatureCalcContext, dates: list[int], columns: list[str]) -> pd.DataFrame:
@@ -162,14 +157,5 @@ def _fetch_table_for_dates(
     )
 
 
-def _feature_frame(df: pd.DataFrame, feature_name: str, value_column: str) -> pd.DataFrame:
-    if df.empty:
-        return _empty_feature_frame()
-    result = df[["ts_code", "trade_date", value_column]].copy()
-    result["feature_name"] = feature_name
-    result = result.rename(columns={value_column: "value"})
-    return result[["ts_code", "trade_date", "feature_name", "value"]]
-
-
-def _empty_feature_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=["ts_code", "trade_date", "feature_name", "value"])
+def _empty_feature_frame(outputs: list[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=["ts_code", "trade_date", *outputs])

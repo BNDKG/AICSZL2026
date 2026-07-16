@@ -100,3 +100,16 @@ def test_resolve_experiment_timing_rejects_calendar_without_required_future_date
             predict_dates=[20240103],
             definition=get_target_definition(EXECUTABLE_OPEN_5D_TARGET),
         )
+
+
+def test_resolve_experiment_timing_trims_trailing_signal_without_next_open():
+    timing = resolve_experiment_timing(
+        calendar=CALENDAR[:10],
+        train_dates=[20231221],
+        predict_dates=[20240103, 20240104],
+        definition=get_target_definition(EXECUTABLE_OPEN_5D_TARGET),
+    )
+
+    assert timing.predict_dates == (20240103,)
+    assert timing.execution_dates == (20240104,)
+    assert timing.signal_to_execution == {20240103: 20240104}

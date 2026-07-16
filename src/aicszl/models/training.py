@@ -9,6 +9,7 @@ from typing import Any
 
 from lightgbm import LGBMRegressor
 
+from aicszl.artifact_cache import build_training_contract
 from aicszl.datasets import DatasetRequest, assemble_dataset
 from aicszl.features.store import FeatureStore
 
@@ -51,8 +52,9 @@ def train_lightgbm_regressor(
     if dataset.empty:
         raise ValueError("Training dataset is empty")
 
-    feature_hashes = _feature_code_hashes(store, job.features)
-    artifact_hash = compute_artifact_identity(job, feature_hashes)
+    contract = build_training_contract(store, job)
+    feature_hashes = contract.feature_code_hashes
+    artifact_hash = contract.cache_key
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     model_path = output_path / f"{job.name}__{artifact_hash}.pkl"
@@ -87,25 +89,6 @@ def compute_artifact_identity(job: TrainingJob, feature_code_hashes: dict[str, s
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
-
-
-def _feature_code_hashes(store: FeatureStore, features: list[str]) -> dict[str, str]:
-    if not features:
-        return {}
-    placeholders = ", ".join("?" for _ in features)
-    rows = store.fetch_df(
-        f"""
-        SELECT feature_name, code_hash
-        FROM feature_meta
-        WHERE feature_name IN ({placeholders})
-        """,
-        list(features),
-    )
-    hashes = dict(zip(rows["feature_name"], rows["code_hash"], strict=False))
-    missing = [feature for feature in features if feature not in hashes]
-    if missing:
-        raise ValueError(f"Missing feature metadata: {missing}")
-    return {feature: str(hashes[feature]) for feature in features}
 
 
 def _normalized_job(job: TrainingJob) -> dict[str, Any]:

@@ -1,6 +1,10 @@
+import hashlib
+
 import pandas as pd
 import pytest
 
+import aicszl.features.registry as registry_module
+from aicszl.features.builtins import register_builtin_features
 from aicszl.features.registry import FeatureRegistry
 
 
@@ -120,3 +124,25 @@ def test_feature_plugin_requires_domain_name_version_plugin_id():
         )
         def bad_plugin_id(ctx, dates):
             return pd.DataFrame()
+
+
+def test_code_hash_matches_golden_digest(monkeypatch):
+    source = "def calculation(ctx, dates):\n    return dates\n"
+
+    def calculation(_ctx, _dates):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(registry_module.inspect, "getsource", lambda _value: source)
+
+    assert registry_module._code_hash(calculation) == (
+        "bbaaf25b28c7d7ecce3ed03739137e7bbcfcf919d073e3f0c66f378284e9fcce"
+    )
+
+
+def test_builtin_hash_uses_function_source_formula():
+    registry = FeatureRegistry()
+    register_builtin_features(registry)
+    plugin = registry.get_plugin("market.raw_fields.v1")
+    source = registry_module.inspect.getsource(plugin.func)
+
+    assert plugin.code_hash == hashlib.sha256(source.encode("utf-8")).hexdigest()

@@ -98,8 +98,7 @@ def calc_ret_5d_rank_pct(ctx: TargetCalcContext, dates: list[int]) -> pd.DataFra
         return _empty_target_frame()
 
     returns["value"] = returns.groupby("trade_date")["ret_5d"].rank(method="average", pct=True)
-    returns["target_name"] = LEGACY_CLOSE_5D_TARGET
-    return returns[["ts_code", "trade_date", "target_name", "value"]].reset_index(drop=True)
+    return returns[["ts_code", "trade_date", "value"]].reset_index(drop=True)
 
 
 def calc_ret_open_t1_open_t6_rank_pct(
@@ -143,11 +142,8 @@ def calc_ret_open_t1_open_t6_rank_pct(
         method="average",
         pct=True,
     )
-    returns["target_name"] = EXECUTABLE_OPEN_5D_TARGET
-    return returns[["ts_code", "trade_date", "target_name", "value"]].reset_index(
-        drop=True
-    )
+    return returns[["ts_code", "trade_date", "value"]].reset_index(drop=True)
 
 
 def _empty_target_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=["ts_code", "trade_date", "target_name", "value"])
+    return pd.DataFrame(columns=["ts_code", "trade_date", "value"])

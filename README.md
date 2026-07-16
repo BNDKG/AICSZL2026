@@ -116,33 +116,9 @@ aicszl feature update `
 
 特征更新器根据 `trade_cal` 和插件内各输出的水位生成连续交易日，默认按20个交易日分批提交。新插件首次更新时会从项目起始日期 `20200101` 回填；失败重跑会从最后成功批次继续。目标日期为非交易日时，特征水位停在不晚于目标日期的最后一个交易日。
 
-### 价格成交量实验特征组
+### 宽表特征存储
 
-`market.price_volume_pack.v1` 是一个独立的五输出实验插件，依赖 `daily` 和 `adj_factor`，统一使用20个交易观察的最长回看窗口：
-
-- `market.ret_20d_rank.v1`：20日复权收益率排名。
-- `market.reversal_1d_rank.v1`：负1日复权收益率排名，用于测试短期反转。
-- `risk.volatility_20d_rank.v1`：20日日收益标准差排名。
-- `liquidity.amount_ratio_5d_rank.v1`：当日成交额相对前5日平均成交额的放大倍数排名。
-- `market.close_position_20d_rank.v1`：复权收盘价在20日复权最高、最低区间中的位置排名。
-
-只回填或增量更新该插件时，请替换目标日期后执行：
-
-```powershell
-aicszl feature update `
-  --to YYYYMMDD `
-  --plugins market.price_volume_pack.v1
-```
-
-新插件首次运行会从 `20200101` 连续回填；最初20个交易日属于合法预热期。五个输出作为同一插件原子更新，其中一个输出或写入失败时整个批次回滚。
-
-静态特征组定义在 `configs/features.yaml`：
-
-- `base_v1`：原有5个基线特征。
-- `price_volume_exp_v1`：上述5个新增实验特征。
-- `base_plus_price_volume_v1`：基线5个加新增5个，共10个特征。
-
-加入特征库不代表这些特征已经被证明有效。后续应使用相同训练区间、模型参数、预测区间和回测设置，分别比较三个特征组的独立表现与增量价值。
+当前仅保留 `base_v1` 的5个基线特征。特征库不再使用每个数值一行的统一长表，而是按插件建立物理宽表：每行只有一份 `(ts_code, trade_date)`，插件的全部输出分别占一列。target 也按 target 名称使用独立物理表。数据库中不存在旧的 `feature_values` 或 `target_values` 表，也没有旧格式兼容和迁移路径；实验环境需要重建时直接删除 `data/features.duckdb` 后从 `raw.duckdb` 回算。
 
 ## 特征、target、训练、预测和 blend
 
@@ -245,7 +221,7 @@ artifacts/experiments/train_2020_2021_validate_2022_2024/backtests/equity_curve.
 
 ```powershell
 python scripts/run_experiment.py `
-  --experiment configs/experiments/pv_5_vs_10_executable_5d_202607.yaml `
+  --experiment configs/experiments/base5_wide_rebuild_202607.yaml `
   --dry-run
 ```
 
@@ -253,10 +229,10 @@ python scripts/run_experiment.py `
 
 ```powershell
 python scripts/run_experiment.py `
-  --experiment configs/experiments/pv_5_vs_10_executable_5d_202607.yaml
+  --experiment configs/experiments/base5_wide_rebuild_202607.yaml
 ```
 
-正式配置比较固定种子随机 baseline、`base_v1` 原5特征和 `base_plus_price_volume_v1` 完整10特征。两个模型使用相同训练标签、有效交易日期、LightGBM 参数和过滤条件。预测完成后，运行器先取所有模型 `(trade_date, ts_code)` 的每日交集，再在共同股票池内重新计算模型百分位排名；随机 baseline 也只在相同排序后的交集上生成，因此三条曲线的可交易候选集合完全一致。
+正式配置比较固定种子随机 baseline 与 `base_v1` 5特征模型。两条曲线使用相同有效交易日期和可交易候选集合。
 
 ### 可执行的五日收益口径
 
@@ -270,14 +246,24 @@ python scripts/run_experiment.py `
 artifacts/experiments/<experiment-name>/runs/<timestamp>-<config-hash>/
 ```
 
-其中包含配置快照、`run_manifest.json`、各模型及预测、共同 score、共享 provider、三组 report/positions、`metrics.json`、`metrics.csv` 和 `equity_curve.png`。完成状态只会在全部产物写入并验证后发布。
+其中包含配置快照、`run_manifest.json`、模型及预测、共同 score、共享 provider、两组 report/positions、`metrics.json`、`metrics.csv` 和 `equity_curve.png`。完成状态只会在全部产物写入并验证后发布。
+
+### 实验模型与预测缓存
+
+后续新增特征实验必须先阅读 [`docs/operations/incremental_experiment_runbook.md`](docs/operations/incremental_experiment_runbook.md)。该手册固定了插件级增量更新、模型/预测缓存命中规则、后台 10 分钟轮询、异常恢复、验收和 token 控制要求。
+
+正式实验会把可跨 run 复用的模型和预测写入 `artifacts/cache/models/` 与 `artifacts/cache/predictions/`，同时仍在每个 run 的 `models/`、`predictions/` 下物化并登记本次产物。模型按语义契约复用：有序特征、target、训练区间、过滤条件、模型参数、特征代码哈希或所选训练数据发生变化时都会生成新 key；缓存文件损坏也会重新生成，而实验名和特征组别名本身不会造成无意义的失效。
+
+预测会优先精确复用，也可从更长区间切片；当已有预测是同一起点的有效前缀时，只为实际缺失的交易日期补算并合并。若历史特征或 target 的指纹改变，则前缀失效并重新生成完整请求区间。每个训练、预测 stage 都在 `run_manifest.json` 中记录 cache key、来源、命中模式及复用/新增行数，便于审计。
+
+缓存只覆盖模型训练和预测。每个新实验 run 仍重新计算共同 `(trade_date, ts_code)` 样本、固定种子随机分数、共享 provider 和回测，使结果清单保持完整自洽。
 
 长任务中断后，使用失败运行目录显式恢复：
 
 ```powershell
 python scripts/run_experiment.py `
-  --experiment configs/experiments/pv_5_vs_10_executable_5d_202607.yaml `
-  --resume artifacts/experiments/pv_5_vs_10_executable_5d_202607/runs/替换为失败运行目录
+  --experiment configs/experiments/base5_wide_rebuild_202607.yaml `
+  --resume artifacts/experiments/base5_wide_rebuild_202607/runs/替换为失败运行目录
 ```
 
 恢复前会重新校验配置哈希、特征代码哈希和已记录产物的 SHA-256；损坏阶段及其下游不会被复用。已经完成的运行是只读的，若要重复实验应创建新运行。

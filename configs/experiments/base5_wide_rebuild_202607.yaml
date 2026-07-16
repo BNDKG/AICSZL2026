@@ -1,4 +1,4 @@
-name: pv_5_vs_10_executable_5d_202607
+name: base5_wide_rebuild_202607
 
 data:
   feature_cutoff: 20260710
@@ -13,10 +13,8 @@ predict:
   end: 20260701
 
 models:
-  - label: 5_features
+  - label: base5
     feature_group: base_v1
-  - label: 10_features
-    feature_group: base_plus_price_volume_v1
 
 model_params:
   n_estimators: 50

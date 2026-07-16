@@ -24,11 +24,9 @@ def test_builtin_market_raw_field_features_read_daily_table(tmp_path: Path):
     plugin = registry.get("market.close.v1")
     result = plugin.func(FeatureCalcContext(raw), [20200102])
 
-    assert result.sort_values(["ts_code", "feature_name"]).to_dict("records") == [
-        {"ts_code": "000001.SZ", "trade_date": 20200102, "feature_name": "market.amount.v1", "value": 10000.0},
-        {"ts_code": "000001.SZ", "trade_date": 20200102, "feature_name": "market.close.v1", "value": 10.5},
-        {"ts_code": "000002.SZ", "trade_date": 20200102, "feature_name": "market.amount.v1", "value": 20000.0},
-        {"ts_code": "000002.SZ", "trade_date": 20200102, "feature_name": "market.close.v1", "value": 20.5},
+    assert result.sort_values("ts_code").to_dict("records") == [
+        {"ts_code": "000001.SZ", "trade_date": 20200102, "market.close.v1": 10.5, "market.amount.v1": 10000.0},
+        {"ts_code": "000002.SZ", "trade_date": 20200102, "market.close.v1": 20.5, "market.amount.v1": 20000.0},
     ]
 
 
@@ -66,8 +64,8 @@ def test_builtin_market_ret_5d_rank_uses_past_adjusted_prices_only(tmp_path: Pat
     result = plugin.func(FeatureCalcContext(raw), [20200109])
 
     assert result.sort_values("ts_code").to_dict("records") == [
-        {"ts_code": "000001.SZ", "trade_date": 20200109, "feature_name": "market.ret_5d_rank.v1", "value": 1.0},
-        {"ts_code": "000002.SZ", "trade_date": 20200109, "feature_name": "market.ret_5d_rank.v1", "value": 0.5},
+        {"ts_code": "000001.SZ", "trade_date": 20200109, "market.ret_5d_rank.v1": 1.0},
+        {"ts_code": "000002.SZ", "trade_date": 20200109, "market.ret_5d_rank.v1": 0.5},
     ]
 
 
@@ -107,21 +105,19 @@ def test_builtin_limit_and_moneyflow_features(tmp_path: Path):
     moneyflow = registry.get("moneyflow.net_mf_amount_rank.v1").func(FeatureCalcContext(raw), [20200102])
 
     assert limit.sort_values("ts_code").to_dict("records") == [
-        {"ts_code": "000001.SZ", "trade_date": 20200102, "feature_name": "limit.high_stop.v1", "value": 1.0},
-        {"ts_code": "000002.SZ", "trade_date": 20200102, "feature_name": "limit.high_stop.v1", "value": 0.0},
+        {"ts_code": "000001.SZ", "trade_date": 20200102, "limit.high_stop.v1": 1.0},
+        {"ts_code": "000002.SZ", "trade_date": 20200102, "limit.high_stop.v1": 0.0},
     ]
     assert moneyflow.sort_values("ts_code").to_dict("records") == [
         {
             "ts_code": "000001.SZ",
             "trade_date": 20200102,
-            "feature_name": "moneyflow.net_mf_amount_rank.v1",
-            "value": 0.5,
+            "moneyflow.net_mf_amount_rank.v1": 0.5,
         },
         {
             "ts_code": "000002.SZ",
             "trade_date": 20200102,
-            "feature_name": "moneyflow.net_mf_amount_rank.v1",
-            "value": 1.0,
+            "moneyflow.net_mf_amount_rank.v1": 1.0,
         },
     ]
 

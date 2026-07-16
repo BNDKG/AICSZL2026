@@ -12,12 +12,18 @@ from typing import Callable
 import pandas as pd
 import yaml
 
+from aicszl.artifact_cache import (
+    MODEL_CACHE_SCHEMA_VERSION,
+    PREDICTION_CACHE_SCHEMA_VERSION,
+    get_or_predict_cached,
+    get_or_train_cached_model,
+)
 from aicszl.backtests import build_score_dataset, save_equity_curve
 from aicszl.backtests.qlib_adapter import export_qlib_provider, run_qlib_topk_backtest
 from aicszl.config import load_feature_groups, load_settings
 from aicszl.features import FeatureRegistry, FeatureStore, FeatureUpdater
 from aicszl.features.builtins import FeatureCalcContext, register_builtin_features
-from aicszl.models.training import TrainingJob, train_lightgbm_regressor
+from aicszl.models.training import TrainingJob
 from aicszl.predictions import PredictionRequest, predict_from_artifact
 from aicszl.raw import RawStore
 from aicszl.targets import TargetCalcContext, calculate_target, get_target_definition
@@ -37,6 +43,12 @@ from .manifest import (
     fail_run,
     record_stage,
     validate_resumable_run,
+)
+
+
+_PRE_CACHE_UNAVAILABLE_REASON = "pre_cache_model_missing_original_data_fingerprint"
+_PRE_CACHE_PREDICTION_UNAVAILABLE_REASON = (
+    "pre_cache_prediction_missing_original_data_fingerprint"
 )
 from .timing import resolve_experiment_timing, shift_score_frames_to_execution
 
@@ -71,6 +83,9 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
     settings = load_settings(request.settings_path)
     groups = load_feature_groups(request.feature_groups_path)
     models = resolve_feature_groups(config, groups)
+    cache_root = settings.paths.artifacts_dir / "cache"
+    model_cache_root = cache_root / "models"
+    prediction_cache_root = cache_root / "predictions"
     registry = FeatureRegistry()
     register_builtin_features(registry)
     required_plugins, feature_hashes = _required_feature_contract(registry, models)
@@ -107,6 +122,7 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
             definition=target_definition,
         )
         train_dates = list(timing.train_dates)
+        predict_dates = list(timing.predict_dates)
         timing_contract = {
             "signal_available": "close",
             "execution_price": (
@@ -232,7 +248,7 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
                 config.train.target,
                 train_dates,
             )
-            rows = feature_store.upsert_target_values(targets)
+            rows = feature_store.append_target_values(config.train.target, targets)
             target_contract = _validate_target_coverage(
                 feature_store,
                 config.train.target,
@@ -249,13 +265,6 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
         model_artifacts: dict[str, SimpleNamespace] = {}
         for model in models:
             current_stage = f"train:{model.label}"
-            if current_stage in manifest.data["stages"]:
-                paths = _stage_artifact_paths(manifest, current_stage)
-                model_artifacts[model.label] = SimpleNamespace(
-                    model_path=_only_suffix(paths, ".pkl"),
-                    meta_path=_only_suffix(paths, ".json"),
-                )
-                continue
             job = TrainingJob(
                 name=f"{config.name}_{model.label}",
                 x_group=model.feature_group,
@@ -265,22 +274,62 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
                 filters=["market.amount.v1 > 0"],
                 model_params=asdict(config.model_params),
             )
-            artifact = train_lightgbm_regressor(
+            if current_stage in manifest.data["stages"]:
+                paths = _stage_artifact_paths(manifest, current_stage)
+                metadata = manifest.data["stages"][current_stage]["metadata"]
+                cache_key = _trusted_model_cache_key(
+                    metadata,
+                    model,
+                    model_cache_root,
+                )
+                if cache_key is not None:
+                    model_artifacts[model.label] = SimpleNamespace(
+                        model_path=_only_suffix(paths, ".pkl"),
+                        meta_path=_only_suffix(paths, ".json"),
+                        cache_key=cache_key,
+                        cache_trusted=True,
+                    )
+                    continue
+                model_artifacts[model.label] = SimpleNamespace(
+                    model_path=_only_suffix(paths, ".pkl"),
+                    meta_path=_only_suffix(paths, ".json"),
+                    cache_key=None,
+                    cache_trusted=False,
+                )
+                record_stage(
+                    manifest,
+                    current_stage,
+                    artifacts=paths,
+                    metadata={
+                        **metadata,
+                        "cache_hit": False,
+                        "cache_schema_version": None,
+                        "cache_mode": "unavailable",
+                        "cache_key": None,
+                        "cache_source": None,
+                        "cache_unavailable_reason": _PRE_CACHE_UNAVAILABLE_REASON,
+                    },
+                )
+                _emit(request, f"stage resumed {current_stage} cache=unavailable")
+                continue
+            artifact = get_or_train_cached_model(
                 feature_store,
                 job,
+                model_cache_root,
                 manifest.run_dir / "models" / model.label,
+                None,
             )
-            model_artifacts[model.label] = artifact
+            model_artifacts[model.label] = SimpleNamespace(
+                model_path=artifact.model_path,
+                meta_path=artifact.meta_path,
+                cache_key=artifact.cache_key,
+                cache_trusted=True,
+            )
             record_stage(
                 manifest,
                 current_stage,
                 artifacts=[artifact.model_path, artifact.meta_path],
-                metadata={
-                    "artifact_hash": artifact.artifact_hash,
-                    "train_rows": int(artifact.train_rows),
-                    "feature_group": model.feature_group,
-                    "features": list(model.features),
-                },
+                metadata=_model_stage_metadata(artifact, model),
             )
             _emit(request, f"stage complete {current_stage} rows={artifact.train_rows}")
 
@@ -288,26 +337,89 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
         for model in models:
             current_stage = f"predict:{model.label}"
             if current_stage in manifest.data["stages"]:
-                prediction_paths[model.label] = _only_suffix(
-                    _stage_artifact_paths(manifest, current_stage), ".pkl"
-                )
+                paths = _stage_artifact_paths(manifest, current_stage)
+                prediction_paths[model.label] = _only_suffix(paths, ".pkl")
+                metadata = manifest.data["stages"][current_stage]["metadata"]
+                model_artifact = model_artifacts[model.label]
+                if not _trusted_prediction_cache_stage(
+                    metadata,
+                    model_artifact,
+                    prediction_cache_root,
+                ):
+                    reason = (
+                        _PRE_CACHE_PREDICTION_UNAVAILABLE_REASON
+                        if model_artifact.cache_trusted
+                        else _PRE_CACHE_UNAVAILABLE_REASON
+                    )
+                    record_stage(
+                        manifest,
+                        current_stage,
+                        artifacts=paths,
+                        metadata={
+                            **metadata,
+                            "cache_hit": False,
+                            "cache_schema_version": None,
+                            "cache_mode": "unavailable",
+                            "cache_key": None,
+                            "cache_source": None,
+                            "cache_unavailable_reason": reason,
+                        },
+                    )
+                    _emit(request, f"stage resumed {current_stage} cache=unavailable")
                 continue
-            artifact = predict_from_artifact(
-                feature_store,
-                PredictionRequest(
-                    model_path=model_artifacts[model.label].model_path,
-                    meta_path=model_artifacts[model.label].meta_path,
-                    start_date=predict_dates[0],
-                    end_date=predict_dates[-1],
-                ),
-                manifest.run_dir / "predictions" / model.label,
+            prediction_request = PredictionRequest(
+                model_path=model_artifacts[model.label].model_path,
+                meta_path=model_artifacts[model.label].meta_path,
+                start_date=predict_dates[0],
+                end_date=predict_dates[-1],
             )
+            model_cache_key = model_artifacts[model.label].cache_key
+            if _is_model_cache_key(model_cache_key):
+                artifact = get_or_predict_cached(
+                    feature_store,
+                    prediction_request,
+                    model_cache_key,
+                    prediction_cache_root,
+                    manifest.run_dir / "predictions" / model.label,
+                    None,
+                )
+                prediction_metadata = {
+                    "cache_hit": bool(artifact.cache_hit),
+                    "cache_schema_version": PREDICTION_CACHE_SCHEMA_VERSION,
+                    "cache_mode": artifact.cache_mode,
+                    "cache_key": artifact.cache_key,
+                    "cache_source": artifact.cache_source,
+                    "reused_rows": int(artifact.reused_rows),
+                    "generated_rows": int(artifact.generated_rows),
+                    "generated_range": artifact.generated_range,
+                }
+            else:
+                artifact = predict_from_artifact(
+                    feature_store,
+                    prediction_request,
+                    manifest.run_dir / "predictions" / model.label,
+                )
+                prediction_metadata = {
+                    "cache_hit": False,
+                    "cache_schema_version": None,
+                    "cache_mode": "unavailable",
+                    "cache_key": None,
+                    "cache_source": None,
+                    "reused_rows": 0,
+                    "generated_rows": int(artifact.rows),
+                    "generated_range": [predict_dates[0], predict_dates[-1]],
+                    "cache_unavailable_reason": _PRE_CACHE_UNAVAILABLE_REASON,
+                }
             prediction_paths[model.label] = artifact.prediction_path
             record_stage(
                 manifest,
                 current_stage,
                 artifacts=[artifact.prediction_path],
-                metadata={"prediction_id": artifact.prediction_id, "rows": int(artifact.rows)},
+                metadata={
+                    "prediction_id": artifact.prediction_id,
+                    "rows": int(artifact.rows),
+                    **prediction_metadata,
+                },
             )
             _emit(request, f"stage complete {current_stage} rows={artifact.rows}")
 
@@ -494,7 +606,7 @@ def run_experiment(request: ExperimentRunRequest) -> ExperimentRunResult:
             save_equity_curve(
                 display_reports,
                 temporary_curve,
-                title="Random baseline vs 5-feature vs 10-feature net equity",
+                title=_equity_curve_title(models),
             )
             os.replace(temporary_curve, equity_curve_path)
             record_stage(
@@ -621,23 +733,7 @@ def _validate_feature_coverage(
                 f"Feature watermark not ready feature={feature} "
                 f"actual={state.last_success_trade_date} required={cutoff}"
             )
-    placeholders = ", ".join("?" for _ in features)
-    coverage = store.fetch_df(
-        f"""
-        SELECT feature_name,
-               COUNT(*) AS row_count,
-               COUNT(*) FILTER (WHERE isfinite(value)) AS finite_count,
-               MIN(trade_date) AS min_date,
-               MAX(trade_date) AS max_date,
-               COUNT(DISTINCT trade_date) AS date_count
-        FROM feature_values
-        WHERE trade_date BETWEEN ? AND ?
-          AND feature_name IN ({placeholders})
-        GROUP BY feature_name
-        ORDER BY feature_name
-        """,
-        [int(start_date), int(cutoff), *features],
-    )
+    coverage = store.feature_coverage(features, start_date, cutoff)
     actual = set(str(value) for value in coverage.get("feature_name", []))
     missing = set(features).difference(actual)
     if missing:
@@ -653,19 +749,9 @@ def _validate_target_coverage(
     target: str,
     train_dates: list[int],
 ) -> dict[str, int]:
-    coverage = store.fetch_df(
-        """
-        SELECT COUNT(*) AS row_count,
-               COUNT(DISTINCT trade_date) AS date_count
-        FROM target_values
-        WHERE target_name = ?
-          AND trade_date BETWEEN ? AND ?
-          AND isfinite(value)
-        """,
-        [target, train_dates[0], train_dates[-1]],
-    )
-    row_count = int(coverage.iloc[0]["row_count"])
-    date_count = int(coverage.iloc[0]["date_count"])
+    coverage = store.target_coverage(target, train_dates[0], train_dates[-1])
+    row_count = int(coverage["row_count"])
+    date_count = int(coverage["date_count"])
     if row_count <= 0 or date_count != len(train_dates):
         raise RuntimeError(
             f"Target coverage incomplete target={target} dates={date_count}/{len(train_dates)}"
@@ -786,6 +872,107 @@ def _display_label(
         return f"Random baseline (seed {config.backtest.random_seed})"
     model = next(model for model in models if model.label == label)
     return f"{len(model.features)} features"
+
+
+def _model_stage_metadata(artifact, model: ResolvedModel) -> dict[str, object]:
+    return {
+        "artifact_hash": artifact.artifact_hash,
+        "cache_hit": bool(artifact.cache_hit),
+        "cache_schema_version": MODEL_CACHE_SCHEMA_VERSION,
+        "cache_key": artifact.cache_key,
+        "cache_source": artifact.cache_source,
+        "train_rows": int(artifact.train_rows),
+        "feature_group": model.feature_group,
+        "features": list(model.features),
+    }
+
+
+def _is_model_cache_key(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _trusted_model_cache_key(
+    metadata: object,
+    model: ResolvedModel,
+    model_cache_root: Path,
+) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    cache_key = metadata.get("cache_key")
+    if (
+        not _schema_version_matches(
+            metadata.get("cache_schema_version"), MODEL_CACHE_SCHEMA_VERSION
+        )
+        or not _is_model_cache_key(cache_key)
+        or metadata.get("artifact_hash") != cache_key
+        or not isinstance(metadata.get("cache_hit"), bool)
+        or metadata.get("feature_group") != model.feature_group
+        or metadata.get("features") != list(model.features)
+        or not _valid_nonnegative_int(metadata.get("train_rows"))
+    ):
+        return None
+    expected_source = (model_cache_root / cache_key).resolve()
+    if not _resolved_path_matches(metadata.get("cache_source"), expected_source):
+        return None
+    return cache_key
+
+
+def _trusted_prediction_cache_stage(
+    metadata: object,
+    model_artifact: SimpleNamespace,
+    prediction_cache_root: Path,
+) -> bool:
+    if not model_artifact.cache_trusted or not isinstance(metadata, dict):
+        return False
+    cache_key = metadata.get("cache_key")
+    model_cache_key = model_artifact.cache_key
+    if (
+        not _schema_version_matches(
+            metadata.get("cache_schema_version"), PREDICTION_CACHE_SCHEMA_VERSION
+        )
+        or not _is_model_cache_key(cache_key)
+        or not _is_model_cache_key(model_cache_key)
+        or not isinstance(metadata.get("cache_hit"), bool)
+        or metadata.get("cache_mode") not in {"exact", "slice", "extend", "miss"}
+        or not _valid_nonnegative_int(metadata.get("rows"))
+        or not _valid_nonnegative_int(metadata.get("reused_rows"))
+        or not _valid_nonnegative_int(metadata.get("generated_rows"))
+    ):
+        return False
+    expected_source = (
+        prediction_cache_root / model_cache_key / f"{cache_key}.pkl"
+    ).resolve()
+    return _resolved_path_matches(metadata.get("cache_source"), expected_source)
+
+
+def _resolved_path_matches(value: object, expected: Path) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        path = Path(value)
+        return path.is_absolute() and path.resolve() == expected
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _schema_version_matches(value: object, expected: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == expected
+
+
+def _valid_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _equity_curve_title(models: tuple[ResolvedModel, ...]) -> str:
+    comparisons = [
+        "Random baseline",
+        *(f"{len(model.features)} features" for model in models),
+    ]
+    return " vs ".join(comparisons) + " net equity"
 
 
 def _emit(request: ExperimentRunRequest, message: str) -> None:

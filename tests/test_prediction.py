@@ -4,8 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from aicszl.features.store import FeatureStore
-from aicszl.predictions.runner import PredictionRequest, predict_from_artifact
+from aicszl.features.store import FeatureMeta, FeatureStore
+from aicszl.predictions.runner import (
+    PredictionRequest,
+    predict_from_artifact,
+    prediction_available_dates,
+)
 
 
 class LinearModel:
@@ -15,25 +19,26 @@ class LinearModel:
 
 def test_predict_from_artifact_writes_prediction_pkl_with_expected_columns(tmp_path: Path):
     store = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
-    store.upsert_feature_values(
+    _register_features(store)
+    store.append_plugin_values(
+        "market.raw_fields.v1",
+        ["market.close.v1", "market.amount.v1"],
         pd.DataFrame(
             [
-                _feature("000001.SZ", 20200102, "market.close.v1", 10.0),
-                _feature("000001.SZ", 20200102, "market.amount.v1", 1000.0),
-                _feature("000002.SZ", 20200102, "market.close.v1", 20.0),
-                _feature("000002.SZ", 20200102, "market.amount.v1", 500.0),
-                _feature("000001.SZ", 20200103, "market.close.v1", 30.0),
-                _feature("000001.SZ", 20200103, "market.amount.v1", 100.0),
+                _feature("000001.SZ", 20200102, 10.0, 1000.0),
+                _feature("000002.SZ", 20200102, 20.0, 500.0),
+                _feature("000001.SZ", 20200103, 30.0, 100.0),
             ]
-        )
+        ),
     )
-    store.upsert_target_values(
+    store.append_target_values(
+        "target.ret_5d_rank_pct.v1",
         pd.DataFrame(
             [
-                _target("000001.SZ", 20200102, "target.ret_5d_rank_pct.v1", 0.8),
-                _target("000002.SZ", 20200102, "target.ret_5d_rank_pct.v1", 0.2),
+                {"ts_code": "000001.SZ", "trade_date": 20200102, "value": 0.8},
+                {"ts_code": "000002.SZ", "trade_date": 20200102, "value": 0.2},
             ]
-        )
+        ),
     )
     model_path, meta_path = _write_model_artifact(tmp_path)
 
@@ -87,6 +92,31 @@ def test_predict_from_artifact_writes_prediction_pkl_with_expected_columns(tmp_p
     ]
 
 
+def test_prediction_available_dates_uses_complete_feature_rows_not_calendar_continuity(
+    tmp_path: Path,
+):
+    store = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    _register_features(store)
+    store.append_plugin_values(
+        "market.raw_fields.v1",
+        ["market.close.v1", "market.amount.v1"],
+        pd.DataFrame(
+            [
+                _feature("000001.SZ", 20200102, 10.0, 1000.0),
+                _feature("000001.SZ", 20200103, 11.0, None),
+                _feature("000001.SZ", 20200106, 12.0, 1200.0),
+            ]
+        ),
+    )
+
+    assert prediction_available_dates(
+        store,
+        ["market.close.v1", "market.amount.v1"],
+        20200102,
+        20200106,
+    ) == [20200102, 20200106]
+
+
 def _write_model_artifact(tmp_path: Path) -> tuple[Path, Path]:
     model_path = tmp_path / "model.pkl"
     meta_path = tmp_path / "model.meta.json"
@@ -109,19 +139,26 @@ def _write_model_artifact(tmp_path: Path) -> tuple[Path, Path]:
     return model_path, meta_path
 
 
-def _feature(ts_code: str, trade_date: int, feature_name: str, value: float) -> dict[str, object]:
+def _feature(ts_code: str, trade_date: int, close: float, amount: float | None) -> dict[str, object]:
     return {
         "ts_code": ts_code,
         "trade_date": trade_date,
-        "feature_name": feature_name,
-        "value": value,
+        "market.close.v1": close,
+        "market.amount.v1": amount,
     }
 
 
-def _target(ts_code: str, trade_date: int, target_name: str, value: float) -> dict[str, object]:
-    return {
-        "ts_code": ts_code,
-        "trade_date": trade_date,
-        "target_name": target_name,
-        "value": value,
-    }
+def _register_features(store: FeatureStore) -> None:
+    for feature in ["market.close.v1", "market.amount.v1"]:
+        store.register_feature_meta(
+            FeatureMeta(
+                feature_name=feature,
+                domain="market",
+                version="v1",
+                kind="raw_field",
+                owner_plugin="market.raw_fields.v1",
+                input_tables=["daily"],
+                lookback_days=0,
+                code_hash=f"hash:{feature}",
+            )
+        )
