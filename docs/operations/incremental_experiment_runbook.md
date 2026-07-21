@@ -28,6 +28,10 @@
 - 同一预测已存在时直接复用，只有同起点尾部缺失日期才续算；
 - common universe、provider 和回测按本次比较组重新生成。
 
+特征持久化采用插件级物理宽表：每个 plugin 一张 `fv_*` 表，每行只保存一次
+`(ts_code, trade_date)`，该 plugin 的全部 outputs 分列存储。target 使用独立的 `tv_*`
+物理表。当前库没有统一的 `feature_values` / `target_values` 长事实表，也不提供旧长表迁移或兼容读取；实验环境需要彻底重建时，删除 `data/features.duckdb` 后由 raw 数据重新计算。
+
 ### 2.2 允许忽略的别名
 
 以下名称只用于展示，不得导致模型缓存失效：

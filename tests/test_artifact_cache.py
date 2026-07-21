@@ -279,6 +279,7 @@ def test_cached_model_miss_trains_once_and_alias_hit_skips_trainer(
     assert cache_metadata["job"]["x_group"] == job.x_group
     assert alias_metadata["job"]["name"] == "aliased_run"
     assert alias_metadata["job"]["x_group"] == "alias"
+    assert alias_metadata["model_path"] == str(second.model_path.resolve())
     assert alias_metadata["cache_provenance"]["source_job"] == cache_metadata["job"]
 
 
@@ -341,6 +342,9 @@ def test_concurrent_same_key_requests_train_once_and_receive_one_valid_artifact(
         "concurrent_alias",
     }
     assert {item["job"]["x_group"] for item in metadata} == {"base_v1", "alias"}
+    assert {item["model_path"] for item in metadata} == {
+        str(result.model_path.resolve()) for result in results
+    }
     assert metadata[0]["cache_provenance"]["source_job"] == (
         metadata[1]["cache_provenance"]["source_job"]
     )

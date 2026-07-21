@@ -120,6 +120,102 @@ def test_feature_updater_rejects_incomplete_wide_output_without_partial_table(
     assert all(features.get_state(output).status == "failed" for output in OUTPUTS)
 
 
+def test_feature_updater_rejects_missing_required_trade_dates_without_advancing_watermark(
+    tmp_path: Path,
+):
+    raw = _raw_store(tmp_path, DATES)
+    features = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    registry = FeatureRegistry()
+
+    @registry.feature_plugin(
+        plugin_id=PLUGIN,
+        outputs=OUTPUTS,
+        inputs=[],
+        lookback_days=0,
+    )
+    def missing_dates(_ctx, dates):
+        return _values(dates[:1])
+
+    updater = FeatureUpdater(
+        raw_store=raw,
+        feature_store=features,
+        registry=registry,
+        calc_context=object(),
+        batch_days=len(DATES),
+    )
+
+    with pytest.raises(RuntimeError, match="missing required trade dates: 20200103,20200106"):
+        updater.update_to(DATES[-1])
+
+    assert "fv_test_wide_v1" not in set(features.fetch_df("SHOW TABLES")["name"])
+    assert all(features.get_state(output).last_success_trade_date is None for output in OUTPUTS)
+    assert all(features.get_state(output).status == "failed" for output in OUTPUTS)
+
+
+def test_feature_updater_rejects_output_with_missing_required_trade_date(
+    tmp_path: Path,
+):
+    raw = _raw_store(tmp_path, DATES)
+    features = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    registry = FeatureRegistry()
+
+    @registry.feature_plugin(
+        plugin_id=PLUGIN,
+        outputs=OUTPUTS,
+        inputs=[],
+        lookback_days=0,
+    )
+    def missing_output_value(_ctx, dates):
+        values = _values(dates)
+        values.loc[values["trade_date"] == dates[1], OUTPUTS[1]] = None
+        return values
+
+    updater = FeatureUpdater(
+        raw_store=raw,
+        feature_store=features,
+        registry=registry,
+        calc_context=object(),
+        batch_days=len(DATES),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"output test\.beta\.v1 missing required trade dates: 20200103",
+    ):
+        updater.update_to(DATES[-1])
+
+    assert "fv_test_wide_v1" not in set(features.fetch_df("SHOW TABLES")["name"])
+    assert all(features.get_state(output).last_success_trade_date is None for output in OUTPUTS)
+
+
+def test_feature_updater_allows_missing_dates_only_in_global_lookback_warmup(
+    tmp_path: Path,
+):
+    raw = _raw_store(tmp_path, DATES)
+    features = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)
+    registry = FeatureRegistry()
+
+    @registry.feature_plugin(
+        plugin_id=PLUGIN,
+        outputs=OUTPUTS,
+        inputs=[],
+        lookback_days=2,
+    )
+    def warmup(_ctx, dates):
+        return _values([date for date in dates if date == DATES[-1]])
+
+    result = FeatureUpdater(
+        raw_store=raw,
+        feature_store=features,
+        registry=registry,
+        calc_context=object(),
+        batch_days=1,
+    ).update_to(DATES[-1])
+
+    assert result[PLUGIN].last_success_trade_date == DATES[-1]
+    assert features.feature_available_dates(OUTPUTS, 20200101, 20200131) == [DATES[-1]]
+
+
 def test_feature_updater_requires_raw_dependency_watermark(tmp_path: Path):
     raw = _raw_store(tmp_path, DATES)
     features = FeatureStore(tmp_path / "features.duckdb", start_date=20200101)

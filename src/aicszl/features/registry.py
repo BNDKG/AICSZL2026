@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -110,8 +111,114 @@ def _parse_plugin_id(plugin_id: str) -> tuple[str, str, str]:
 
 
 def _code_hash(func: Callable) -> str:
+    source = _function_source(func)
+    dependencies: list[dict[str, object]] = []
+    visited = {id(func)}
+    _collect_code_dependencies(func, dependencies, visited)
+    if not dependencies:
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()
+    payload = source + "\n#aicszl-code-dependencies-v1\n" + json.dumps(
+        dependencies,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _collect_code_dependencies(
+    func: Callable,
+    dependencies: list[dict[str, object]],
+    visited: set[int],
+) -> None:
+    defaults = _stable_dependency_value(getattr(func, "__defaults__", None))
+    if defaults is not _UNSUPPORTED and defaults is not None:
+        dependencies.append(
+            {"kind": "defaults", "owner": func.__qualname__, "value": defaults}
+        )
+    keyword_defaults = _stable_dependency_value(getattr(func, "__kwdefaults__", None))
+    if keyword_defaults is not _UNSUPPORTED and keyword_defaults is not None:
+        dependencies.append(
+            {"kind": "keyword_defaults", "owner": func.__qualname__, "value": keyword_defaults}
+        )
+    closure = getattr(func, "__closure__", None) or ()
+    for name, cell in sorted(
+        zip(getattr(func.__code__, "co_freevars", ()), closure, strict=False),
+        key=lambda item: item[0],
+    ):
+        try:
+            value = _stable_dependency_value(cell.cell_contents)
+        except ValueError:
+            continue
+        if value is not _UNSUPPORTED:
+            dependencies.append(
+                {"kind": "closure", "owner": func.__qualname__, "name": name, "value": value}
+            )
+
+    for name in sorted(set(getattr(func.__code__, "co_names", ()))):
+        if name not in func.__globals__:
+            continue
+        value = func.__globals__[name]
+        if inspect.isfunction(value) and (
+            value.__module__ == func.__module__
+            or (value.__module__ or "").startswith("aicszl.")
+        ):
+            if id(value) in visited:
+                continue
+            visited.add(id(value))
+            dependencies.append(
+                {
+                    "kind": "function",
+                    "name": value.__qualname__,
+                    "source": _function_source(value),
+                }
+            )
+            _collect_code_dependencies(value, dependencies, visited)
+            continue
+        stable = _stable_dependency_value(value)
+        if stable is not _UNSUPPORTED:
+            dependencies.append(
+                {"kind": "global", "owner": func.__qualname__, "name": name, "value": stable}
+            )
+
+
+def _function_source(func: Callable) -> str:
     try:
-        source = inspect.getsource(func)
+        return inspect.getsource(func)
     except (OSError, TypeError):
-        source = repr(func)
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+        return repr(func)
+
+
+_UNSUPPORTED = object()
+
+
+def _stable_dependency_value(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return {"float": repr(value)}
+    if isinstance(value, tuple):
+        items = [_stable_dependency_value(item) for item in value]
+        if any(item is _UNSUPPORTED for item in items):
+            return _UNSUPPORTED
+        return {"tuple": items}
+    if isinstance(value, list):
+        items = [_stable_dependency_value(item) for item in value]
+        if any(item is _UNSUPPORTED for item in items):
+            return _UNSUPPORTED
+        return {"list": items}
+    if isinstance(value, dict):
+        items: list[tuple[str, object]] = []
+        for key in sorted(value, key=lambda item: repr(item)):
+            stable_key = _stable_dependency_value(key)
+            stable_value = _stable_dependency_value(value[key])
+            if stable_key is _UNSUPPORTED or stable_value is _UNSUPPORTED:
+                return _UNSUPPORTED
+            items.append((json.dumps(stable_key, sort_keys=True), stable_value))
+        return {"dict": items}
+    if isinstance(value, (set, frozenset)):
+        items = [_stable_dependency_value(item) for item in value]
+        if any(item is _UNSUPPORTED for item in items):
+            return _UNSUPPORTED
+        return {"set": sorted(items, key=lambda item: json.dumps(item, sort_keys=True))}
+    return _UNSUPPORTED

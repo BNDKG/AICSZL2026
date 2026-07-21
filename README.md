@@ -271,14 +271,14 @@ python scripts/run_experiment.py `
 多年期实验建议在隐藏后台进程中执行并重定向日志，避免终端会话持续输出：
 
 ```powershell
-$logDir = "artifacts/logs/pv_5_vs_10_executable_5d_202607"
+$logDir = "artifacts/logs/base5_wide_rebuild_202607"
 New-Item -ItemType Directory -Force $logDir | Out-Null
 $process = Start-Process `
   -FilePath python `
   -ArgumentList @(
     "scripts/run_experiment.py",
     "--experiment",
-    "configs/experiments/pv_5_vs_10_executable_5d_202607.yaml"
+    "configs/experiments/base5_wide_rebuild_202607.yaml"
   ) `
   -WorkingDirectory (Get-Location) `
   -RedirectStandardOutput "$logDir/stdout.log" `

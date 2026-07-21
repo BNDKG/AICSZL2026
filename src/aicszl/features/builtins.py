@@ -6,6 +6,7 @@ import pandas as pd
 
 from aicszl.raw.store import RawStore
 
+from .history import fetch_bounded_history
 from .registry import FeatureRegistry
 
 
@@ -60,31 +61,24 @@ def _calc_market_ret_5d_rank(ctx: FeatureCalcContext, dates: list[int]) -> pd.Da
     if not dates:
         return _empty_feature_frame(["market.ret_5d_rank.v1"])
     target_dates = sorted(int(date) for date in dates)
-    max_date = max(target_dates)
-    prices = ctx.raw_store.fetch_df(
-        """
-        SELECT d.ts_code, d.trade_date, d.close * a.adj_factor AS adj_close
-        FROM daily d
-        JOIN adj_factor a
-          ON d.ts_code = a.ts_code AND d.trade_date = a.trade_date
-        WHERE d.trade_date <= ?
-        ORDER BY d.ts_code, d.trade_date
+    prices = fetch_bounded_history(
+        ctx.raw_store,
+        source_sql="""
+            SELECT d.ts_code, d.trade_date, d.close * a.adj_factor AS adj_close
+            FROM daily d
+            JOIN adj_factor a
+              ON d.ts_code = a.ts_code AND d.trade_date = a.trade_date
         """,
-        [max_date],
+        columns=["ts_code", "trade_date", "adj_close"],
+        dates=target_dates,
+        lookback_rows=5,
     )
     if prices.empty:
         return _empty_feature_frame(["market.ret_5d_rank.v1"])
 
-    frames: list[pd.DataFrame] = []
-    for ts_code, group in prices.groupby("ts_code"):
-        ordered = group.sort_values("trade_date").copy()
-        ordered["past_adj_close"] = ordered["adj_close"].shift(5)
-        ordered["ret_5d"] = ordered["adj_close"] / ordered["past_adj_close"] - 1.0
-        frames.append(ordered[["ts_code", "trade_date", "ret_5d"]])
-    if not frames:
-        return _empty_feature_frame(["market.ret_5d_rank.v1"])
-
-    returns = pd.concat(frames, ignore_index=True)
+    returns = prices.sort_values(["ts_code", "trade_date"]).copy()
+    returns["past_adj_close"] = returns.groupby("ts_code")["adj_close"].shift(5)
+    returns["ret_5d"] = returns["adj_close"] / returns["past_adj_close"] - 1.0
     returns = returns[returns["trade_date"].isin(target_dates)].dropna(subset=["ret_5d"])
     if returns.empty:
         return _empty_feature_frame(["market.ret_5d_rank.v1"])

@@ -303,6 +303,28 @@ class FeatureUpdater:
         if unexpected_dates:
             raise ValueError(f"feature plugin returned dates outside batch: {sorted(unexpected_dates)}")
 
+        warmup_days = max(0, int(plugin.lookback_days))
+        warmup_dates = set(all_dates[:warmup_days])
+        required_dates = set(batch).difference(warmup_dates)
+        missing_dates = required_dates.difference(returned_dates)
+        if missing_dates:
+            raise ValueError(
+                "feature plugin missing required trade dates: "
+                + ",".join(str(value) for value in sorted(missing_dates))
+            )
+
+        for output in plugin.outputs:
+            output_dates = set(
+                int(value)
+                for value in values.loc[values[output].notna(), "trade_date"].unique()
+            )
+            missing_output_dates = required_dates.difference(output_dates)
+            if missing_output_dates:
+                raise ValueError(
+                    f"feature plugin output {output} missing required trade dates: "
+                    + ",".join(str(value) for value in sorted(missing_output_dates))
+                )
+
     def _common_success_watermark(self, plugin: FeaturePlugin) -> int | None:
         watermarks = [
             self.feature_store.get_state(output).last_success_trade_date for output in plugin.outputs

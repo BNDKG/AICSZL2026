@@ -135,7 +135,14 @@ def get_or_train_cached_model(
     run_model = run_dir / f"{job.name}__{contract.cache_key}.pkl"
     run_meta = run_dir / f"{job.name}__{contract.cache_key}.meta.json"
     _materialize_file(model_source, run_model)
-    _materialize_model_metadata(meta_source, run_meta, job, cache_entry, contract.cache_key)
+    _materialize_model_metadata(
+        meta_source,
+        run_meta,
+        run_model,
+        job,
+        cache_entry,
+        contract.cache_key,
+    )
     return CachedModelArtifact(
         artifact_hash=contract.cache_key,
         cache_key=contract.cache_key,
@@ -322,6 +329,7 @@ def _materialize_file(source: Path, destination: Path) -> None:
 def _materialize_model_metadata(
     source: Path,
     destination: Path,
+    model_path: Path,
     job: TrainingJob,
     cache_entry: Path,
     cache_key: str,
@@ -335,6 +343,7 @@ def _materialize_model_metadata(
         "name": str(job.name),
         "x_group": str(job.x_group),
     }
+    metadata["model_path"] = str(model_path.resolve())
     metadata["cache_provenance"] = {
         "cache_key": cache_key,
         "cache_source": str(cache_entry.resolve()),
